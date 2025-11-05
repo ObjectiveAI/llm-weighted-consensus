@@ -1142,8 +1142,8 @@ impl SelectChunker {
                 }
                 ('"', Some(SelectChunkerMode::BetweenKeyAndValue), _) => {
                     self.mode = Some(match self.key.as_deref() {
-                        Some("correct_response_key") => {
-                            SelectChunkerMode::InCorrectResponseKeyValue
+                        Some("response_key") => {
+                            SelectChunkerMode::InResponseKeyValue
                         }
                         Some(_) => SelectChunkerMode::InOtherValue,
                         None => unreachable!(),
@@ -1159,7 +1159,7 @@ impl SelectChunker {
                 }
                 (
                     '"',
-                    Some(SelectChunkerMode::InCorrectResponseKeyValue),
+                    Some(SelectChunkerMode::InResponseKeyValue),
                     false,
                 ) => {
                     self.mode = Some(SelectChunkerMode::Done);
@@ -1175,27 +1175,27 @@ impl SelectChunker {
                 // enter tick
                 (
                     '`',
-                    Some(SelectChunkerMode::InCorrectResponseKeyValue),
+                    Some(SelectChunkerMode::InResponseKeyValue),
                     _,
                 ) => {
                     self.mode = Some(
-                        SelectChunkerMode::InCorrectResponseKeyValueInTick,
+                        SelectChunkerMode::InResponseKeyValueInTick,
                     );
                     self.prev_char_escaped = false;
                 }
                 // exit tick
                 (
                     '`',
-                    Some(SelectChunkerMode::InCorrectResponseKeyValueInTick),
+                    Some(SelectChunkerMode::InResponseKeyValueInTick),
                     _,
                 ) => {
                     self.mode =
-                        Some(SelectChunkerMode::InCorrectResponseKeyValue);
+                        Some(SelectChunkerMode::InResponseKeyValue);
                 }
                 // select pfx
                 (
                     c,
-                    Some(SelectChunkerMode::InCorrectResponseKeyValueInTick),
+                    Some(SelectChunkerMode::InResponseKeyValueInTick),
                     _,
                 ) => {
                     let pfx = match SelectPfx::from_char(c) {
@@ -1220,7 +1220,7 @@ impl SelectChunker {
                         }
                     }
                 }
-                (_, Some(SelectChunkerMode::InCorrectResponseKeyValue), _) => {
+                (_, Some(SelectChunkerMode::InResponseKeyValue), _) => {
                     self.prev_char_escaped = false;
                 }
                 _ => {}
@@ -1411,8 +1411,8 @@ impl SelectChunker {
 enum SelectChunkerMode {
     InKey,
     BetweenKeyAndValue,
-    InCorrectResponseKeyValue,
-    InCorrectResponseKeyValueInTick,
+    InResponseKeyValue,
+    InResponseKeyValueInTick,
     InOtherValue,
     Done,
 }

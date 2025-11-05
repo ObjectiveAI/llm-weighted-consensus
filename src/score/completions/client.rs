@@ -351,7 +351,7 @@ where
 
         // add selection to prompt
         let content = format!(
-            "Select the response from these options:\n\n{}",
+            "Select the response:\n\n{}",
             choices_string
         );
         if let Some(chat::completions::request::Message::System(

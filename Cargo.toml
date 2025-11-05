@@ -2,6 +2,13 @@
 name = "llm-weighted-consensus"
 version = "0.1.0"
 edition = "2024"
+authors = ["Objective Artificial Intelligence, Inc. <admin@objective-ai.io>"]
+description = "The most powerful AI scoring system on earth."
+license = "MIT"
+repository = "https://github.com/ObjectiveAI/llm-weighted-consensus"
+homepage = "https://objective-ai.io"
+keywords = ["llm", "ai", "objectiveai", "weighted", "consensus"]
+publish = true
 
 [dependencies]
 axum = { version = "0.8.4" }

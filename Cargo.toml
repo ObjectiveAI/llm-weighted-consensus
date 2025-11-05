@@ -1,0 +1,35 @@
+[package]
+name = "llm-weighted-consensus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+axum = { version = "0.8.4" }
+tokio = { version = "1.45.0", features = ["rt-multi-thread", "macros", "sync"] }
+tokio-stream = { version = "0.1.17" }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140", features = ["preserve_order"] }
+tower-http = { version = "0.6.4", features = ["cors"] }
+futures = { version = "0.3.31" }
+indexmap = { version = "2.2.3", features = ["serde"] }
+reqwest = { version = "0.12.15", default-features = false, features = ["charset", "http2", "rustls-tls", "json"] }
+thiserror = {  version = "2.0.12" }
+serde_path_to_error = { version = "0.1.17" }
+envconfig = { version = "0.11.0" }
+rust_decimal = { version = "1.37.1", features = ["serde-float"] }
+backoff = { version = "0.4.0", features = ["tokio"] }
+rand = { version = "0.9.1" }
+dashmap = { version = "6.1.0" }
+async-trait = { version = "0.1.88" }
+uuid = { version = "1.16.0", features = ["v4"] }
+regex = { version = "1.11.1" }
+tower = { version ="0.5.2" }
+async-stream = { version = "0.3.6" }
+reqwest-eventsource = { version = "0.6.0" }
+eventsource-stream = { version = "0.2.3" }
+twox-hash = { version = "2.1.1" }
+time = { version = "0.3.41" }
+base64 = { version = "0.22.1" }
+base62 = { version = "2.2.1" }
+subtle = { version = "2.6.1" }
+dotenv = { version = "0.15.0" }

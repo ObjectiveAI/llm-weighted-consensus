@@ -1254,7 +1254,17 @@ impl SelectChunker {
         *finish_reason = self.finish_reason;
         *completion_metadata = self.completion_metadata;
         let content = match content.as_deref() {
-            Some(content) => content,
+            Some(content) => {
+                // remove everything preceding the first '{' or following the final '}'
+                let start = content.find('{').unwrap_or(0);
+                let end = content.rfind('}').map(|i| i + 1).unwrap_or(content.len());
+                if end < start {
+                    // safeguard for if final '}' comes before first '{'
+                    content
+                } else {
+                    &content[start..end]
+                }
+            },
             None => return,
         };
         if !matches!(
@@ -1270,6 +1280,7 @@ impl SelectChunker {
         } = match serde_path_to_error::deserialize(&mut de) {
             Ok(key) => key,
             Err(e) => {
+                println!("{}\n{}", content, e);
                 *error = Some(crate::error::ResponseError::from(
                     &super::Error::InvalidChoiceContent(e),
                 ));

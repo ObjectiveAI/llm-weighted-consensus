@@ -26,6 +26,14 @@ pub struct LlmBase {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthetic_reasoning: Option<bool>,
 
+    // messages which will precede the user prompt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prefix_messages: Option<Vec<chat::completions::request::Message>>,
+
+    // messages which will follow the user prompt
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suffix_messages: Option<Vec<chat::completions::request::Message>>,
+
     // openai fields
     #[serde(skip_serializing_if = "Option::is_none")]
     pub frequency_penalty: Option<f64>,
@@ -226,6 +234,15 @@ impl LlmBase {
                 *synthetic_reasoning = None;
             }
         }
+        fn prepare_messages(
+            messages: &mut Option<Vec<chat::completions::request::Message>>,
+        ) {
+            if let Some(msgs) = messages
+                && msgs.is_empty()
+            {
+                *messages = None;
+            }
+        }
         prepare_f64(&mut self.frequency_penalty, 0.0);
         prepare_f64(&mut self.presence_penalty, 0.0);
         prepare_f64(&mut self.repetition_penalty, 1.0);
@@ -245,6 +262,8 @@ impl LlmBase {
         prepare_models(&mut self.models);
         prepare_tool_response_format(&mut self.tool_response_format);
         prepare_synthetic_reasoning(&mut self.synthetic_reasoning);
+        prepare_messages(&mut self.prefix_messages);
+        prepare_messages(&mut self.suffix_messages);
     }
 
     pub fn validate(&self, expect: super::WeightType) -> Result<(), String> {

@@ -345,6 +345,13 @@ where
             ..
         } = &*request;
         let mut messages = messages.clone();
+        if let Some(mut prefix_messages) = llm.base.prefix_messages {
+            prefix_messages.extend(messages);
+            messages = prefix_messages;
+        }
+        if let Some(suffix_messages) = llm.base.suffix_messages {
+            messages.extend(suffix_messages);
+        }
 
         // create prefixes and get choices string
         let (pfx_tree, pfx_indices, choices_string) = {
@@ -479,9 +486,9 @@ where
                 ctx,
                 chat::completions::request::ChatCompletionCreateParams {
                     messages,
-                    model: llm.base.model.clone(),
+                    model: llm.base.model,
                     frequency_penalty: llm.base.frequency_penalty,
-                    logit_bias: llm.base.logit_bias.clone(),
+                    logit_bias: llm.base.logit_bias,
                     logprobs: if llm.base.top_logprobs.is_some() {
                         Some(true)
                     } else {
@@ -497,7 +504,7 @@ where
                     response_format,
                     seed: *seed,
                     service_tier: *service_tier,
-                    stop: llm.base.stop.clone(),
+                    stop: llm.base.stop,
                     stream: request.stream,
                     stream_options: request.stream_options,
                     temperature: llm.base.temperature,
@@ -509,14 +516,14 @@ where
                     max_tokens: llm.base.max_tokens,
                     min_p: llm.base.min_p,
                     plugins: None,
-                    provider: llm.base.provider.clone(),
+                    provider: llm.base.provider,
                     reasoning: llm.base.reasoning,
                     repetition_penalty: llm.base.repetition_penalty,
                     top_a: llm.base.top_a,
                     top_k: llm.base.top_k,
                     usage: request.usage,
                     verbosity: llm.base.verbosity,
-                    models: llm.base.models.clone(),
+                    models: llm.base.models,
                 },
             )
             .await

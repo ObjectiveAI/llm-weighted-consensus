@@ -272,7 +272,10 @@ where
                             super::response::streaming::ChatCompletionChunk,
                         >(&mut de)
                         {
-                            Ok(response) => yield Ok(response),
+                            Ok(mut response) => {
+                                response.with_total_cost();
+                                yield Ok(response)
+                            },
                             Err(e) => {
                                 de = serde_json::Deserializer::from_str(&data);
                                 match serde_path_to_error::deserialize::<

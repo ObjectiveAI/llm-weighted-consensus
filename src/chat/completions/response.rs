@@ -76,6 +76,12 @@ pub mod streaming {
                 push_choice(&mut self.choices, other_choice);
             }
         }
+
+        pub fn with_total_cost(&mut self) {
+            if let Some(usage) = &mut self.usage {
+                usage.with_total_cost();
+            }
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -555,6 +561,10 @@ pub struct Usage {
     pub cost: Option<rust_decimal::Decimal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cost_details: Option<CostDetails>,
+
+    // custom fields
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_cost: Option<rust_decimal::Decimal>,
 }
 
 impl std::default::Default for Usage {
@@ -567,6 +577,7 @@ impl std::default::Default for Usage {
             prompt_tokens_details: None,
             cost: None,
             cost_details: None,
+            total_cost: None,
         }
     }
 }
@@ -618,6 +629,22 @@ impl Usage {
             && self.total_tokens == 0
             && self.completion_tokens_details.is_none()
             && self.prompt_tokens_details.is_none()
+    }
+
+    pub fn with_total_cost(&mut self) {
+        if self.total_cost.is_none()
+            && (self.cost.is_some()
+                || self.cost_details.as_ref().is_some_and(|cd| !cd.is_empty()))
+        {
+            let mut total_cost = rust_decimal::Decimal::ZERO;
+            if let Some(cost) = &self.cost {
+                total_cost += *cost;
+            }
+            if let Some(cost_details) = &self.cost_details {
+                total_cost += cost_details.total_cost();
+            }
+            self.total_cost = Some(total_cost);
+        }
     }
 }
 
@@ -686,6 +713,22 @@ impl CostDetails {
             &mut self.upstream_upstream_inference_cost,
             &other.upstream_upstream_inference_cost,
         );
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.upstream_inference_cost.is_none()
+            && self.upstream_upstream_inference_cost.is_none()
+    }
+
+    pub fn total_cost(&self) -> rust_decimal::Decimal {
+        let mut total_cost = rust_decimal::Decimal::ZERO;
+        if let Some(cost) = &self.upstream_inference_cost {
+            total_cost += *cost;
+        }
+        if let Some(cost) = &self.upstream_upstream_inference_cost {
+            total_cost += *cost;
+        }
+        total_cost
     }
 }
 

@@ -285,6 +285,7 @@ where
             // - confidence for each choice
             let choice_weight_sum = choice_weight.iter().sum::<f64>();
             aggregate.weight_data = Some(weight_data);
+            usage.with_total_cost();
             aggregate.usage = Some(usage);
             for choice in &mut aggregate.choices {
                 if choice.index < request.choices.len() as u64 {

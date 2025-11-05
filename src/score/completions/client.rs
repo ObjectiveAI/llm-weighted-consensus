@@ -1280,7 +1280,6 @@ impl SelectChunker {
         } = match serde_path_to_error::deserialize(&mut de) {
             Ok(key) => key,
             Err(e) => {
-                println!("{}\n{}", content, e);
                 *error = Some(crate::error::ResponseError::from(
                     &super::Error::InvalidChoiceContent(e),
                 ));

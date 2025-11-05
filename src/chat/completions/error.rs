@@ -20,6 +20,8 @@ pub enum Error {
     StreamError(#[from] reqwest_eventsource::Error),
     #[error("error fetching stream: timeout")]
     StreamTimeout,
+    #[error(transparent)]
+    CtxError(error::ResponseError),
 }
 
 impl error::StatusError for Error {
@@ -30,18 +32,27 @@ impl error::StatusError for Error {
                 .map(|s| s.as_u16())
                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
             Error::OpenRouterProviderError(e) => e.status(),
-            Error::EmptyStream => reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            Error::DeserializationError(_) => reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            Error::EmptyStream => {
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+            }
+            Error::DeserializationError(_) => {
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+            }
             Error::BadStatus { code, .. } => code.as_u16(),
             Error::StreamError(reqwest_eventsource::Error::Transport(e)) => e
                 .status()
                 .map(|s| s.as_u16())
                 .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
-            Error::StreamError(reqwest_eventsource::Error::InvalidStatusCode(code, _)) => {
-                code.as_u16()
+            Error::StreamError(
+                reqwest_eventsource::Error::InvalidStatusCode(code, _),
+            ) => code.as_u16(),
+            Error::StreamError(_) => {
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
             }
-            Error::StreamError(_) => reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
-            Error::StreamTimeout => reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            Error::StreamTimeout => {
+                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
+            }
+            Error::CtxError(e) => e.status(),
         }
     }
 
@@ -73,6 +84,9 @@ impl error::StatusError for Error {
                 Error::StreamTimeout => serde_json::json!({
                     "kind": "stream_timeout",
                     "error": "error fetching stream: timeout",
+                }),
+                Error::CtxError(e) => e.message().unwrap_or_else(|| {
+                    serde_json::Value::String("ctx error".to_string())
                 }),
             }
         }))

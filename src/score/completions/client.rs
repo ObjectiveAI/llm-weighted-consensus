@@ -22,18 +22,35 @@ pub fn response_id(created: u64) -> String {
     format!("rnkcpl-{}-{}", uuid.simple(), created)
 }
 
-pub struct Client<CTX, FMODEL, FSTATIC, FTRAININGTABLE> {
-    pub chat_client: Arc<chat::completions::Client>,
+pub struct Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> {
+    pub chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
     pub model_fetcher: Arc<FMODEL>,
     pub weight_fetchers: Arc<
         score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>,
     >,
 }
 
-impl<CTX, FMODEL, FSTATIC, FTRAININGTABLE>
-    Client<CTX, FMODEL, FSTATIC, FTRAININGTABLE>
+impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> {
+    pub fn new(
+        chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
+        model_fetcher: Arc<FMODEL>,
+        weight_fetchers: Arc<
+            score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>,
+        >,
+    ) -> Self {
+        Self {
+            chat_client,
+            model_fetcher,
+            weight_fetchers,
+        }
+    }
+}
+
+impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
+    Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
 where
-    CTX: Send + Sync + 'static,
+    CTX: Clone + Send + Sync + 'static,
+    HNDLCTX: chat::completions::CtxHandler<CTX> + Send + Sync + 'static,
     FMODEL: score::model::Fetcher + Send + Sync + 'static,
     FSTATIC: score::completions::weight::Fetcher<CTX, weight::StaticData>
         + Send
@@ -135,7 +152,7 @@ where
         // fetch weights
         let (weights, weight_data) = self
             .weight_fetchers
-            .fetch(ctx, request.clone(), model.clone())
+            .fetch(ctx.clone(), request.clone(), model.clone())
             .await
             .map_err(|e| super::Error::FetchModelWeights(e))?;
 
@@ -188,6 +205,7 @@ where
                 .iter()
                 .map(|llm| {
                     futures::stream::once(self.clone().llm_create_streaming(
+                        ctx.clone(),
                         response_id.clone(),
                         created,
                         indexer.clone(),
@@ -307,6 +325,7 @@ where
 
     async fn llm_create_streaming(
         self: Arc<Self>,
+        ctx: CTX,
         response_id: String,
         created: u64,
         indexer: Arc<ChoiceIndexer>,
@@ -457,6 +476,7 @@ where
             .chat_client
             .clone()
             .create_streaming(
+                ctx,
                 chat::completions::request::ChatCompletionCreateParams {
                     messages,
                     model: llm.base.model.clone(),

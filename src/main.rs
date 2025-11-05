@@ -91,9 +91,9 @@ async fn main() {
         }]
     });
 
-    let chat_completions_client = Arc::new(chat::completions::Client {
-        http_client: reqwest::Client::new(),
-        backoff: backoff::ExponentialBackoff {
+    let chat_completions_client = Arc::new(chat::completions::Client::new(
+        reqwest::Client::new(),
+        backoff::ExponentialBackoff {
             current_interval: std::time::Duration::from_millis(
                 backoff_current_interval_millis,
             ),
@@ -111,17 +111,14 @@ async fn main() {
             )),
             clock: backoff::SystemClock::default(),
         },
-        api_bases: openai_apis,
-        user_agent: openai_user_agent,
-        x_title: openai_x_title,
-        referer: openai_referer,
-        first_chunk_timeout: std::time::Duration::from_millis(
-            first_chunk_timeout_millis,
-        ),
-        other_chunk_timeout: std::time::Duration::from_millis(
-            other_chunk_timeout_millis,
-        ),
-    });
+        openai_apis,
+        openai_user_agent,
+        openai_x_title,
+        openai_referer,
+        std::time::Duration::from_millis(first_chunk_timeout_millis),
+        std::time::Duration::from_millis(other_chunk_timeout_millis),
+        Arc::new(chat::completions::NoOpCtxHandler::new()),
+    ));
 
     let score_model_fetcher = Arc::new(score::model::UnimplementedFetcher);
 
@@ -147,7 +144,7 @@ async fn main() {
                     let chat_completions_client = chat_completions_client.clone();
                     async move {
                         if request.stream.unwrap_or(false) {
-                            match chat_completions_client.create_streaming(request).await {
+                            match chat_completions_client.create_streaming((), request).await {
                                 Ok(stream) => Sse::new(
                                     stream.map(|result| {
                                         Ok::<Event, Infallible>(
@@ -170,7 +167,7 @@ async fn main() {
                                     .into_response(),
                             }
                         } else {
-                            match chat_completions_client.create_unary(request).await {
+                            match chat_completions_client.create_unary((), request).await {
                                 Ok(response) => Json(response).into_response(),
                                 Err(e) => (
                                     axum::http::StatusCode::from_u16(e.status()).unwrap_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR),

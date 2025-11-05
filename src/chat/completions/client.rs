@@ -18,8 +18,35 @@ struct Attempt<'ab> {
     model: String,
 }
 
+#[async_trait::async_trait]
+pub trait CtxHandler<CTX> {
+    async fn handle(&self, ctx: CTX)
+    -> Result<(), crate::error::ResponseError>;
+}
+
+pub struct NoOpCtxHandler<CTX>(std::marker::PhantomData<CTX>);
+
+impl<CTX> NoOpCtxHandler<CTX> {
+    pub fn new() -> Self {
+        Self(std::marker::PhantomData)
+    }
+}
+
+#[async_trait::async_trait]
+impl<CTX> CtxHandler<CTX> for NoOpCtxHandler<CTX>
+where
+    CTX: Send + Sync + 'static,
+{
+    async fn handle(
+        &self,
+        _ctx: CTX,
+    ) -> Result<(), crate::error::ResponseError> {
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone)]
-pub struct Client {
+pub struct Client<CTX, HNDLCTX> {
     pub http_client: reqwest::Client,
     pub backoff: ExponentialBackoff,
     pub api_bases: Vec<ApiBase>, // try each in order
@@ -28,17 +55,51 @@ pub struct Client {
     pub referer: Option<String>, // referer and http-referer headers
     pub first_chunk_timeout: Duration, // timeout for first stream chunk
     pub other_chunk_timeout: Duration, // timeout for other stream chunks
+    pub ctx_handler: Arc<HNDLCTX>,
+    _ctx: std::marker::PhantomData<CTX>,
 }
 
-impl Client {
+impl<CTX, HNDLCTX> Client<CTX, HNDLCTX> {
+    pub fn new(
+        http_client: reqwest::Client,
+        backoff: ExponentialBackoff,
+        api_bases: Vec<ApiBase>,
+        user_agent: Option<String>,
+        x_title: Option<String>,
+        referer: Option<String>,
+        first_chunk_timeout: Duration,
+        other_chunk_timeout: Duration,
+        ctx_handler: Arc<HNDLCTX>,
+    ) -> Self {
+        Self {
+            http_client,
+            backoff,
+            api_bases,
+            user_agent,
+            x_title,
+            referer,
+            first_chunk_timeout,
+            other_chunk_timeout,
+            ctx_handler,
+            _ctx: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<CTX, HNDLCTX> Client<CTX, HNDLCTX>
+where
+    CTX: Send + Sync + 'static,
+    HNDLCTX: CtxHandler<CTX> + Send + Sync + 'static,
+{
     pub async fn create_unary(
         self: Arc<Self>,
+        ctx: CTX,
         request: super::request::ChatCompletionCreateParams,
     ) -> Result<super::response::unary::ChatCompletion, super::Error> {
         let mut aggregate: Option<
             super::response::streaming::ChatCompletionChunk,
         > = None;
-        let mut stream = self.create_streaming(request).await?;
+        let mut stream = self.create_streaming(ctx, request).await?;
         while let Some(response) = stream.try_next().await? {
             match aggregate {
                 Some(ref mut aggregate) => aggregate.push(&response),
@@ -53,6 +114,7 @@ impl Client {
 
     pub async fn create_streaming(
         self: Arc<Self>,
+        ctx: CTX,
         mut request: super::request::ChatCompletionCreateParams,
     ) -> Result<
         impl Stream<
@@ -65,6 +127,12 @@ impl Client {
         + 'static,
         super::Error,
     > {
+        // handle ctx
+        self.ctx_handler
+            .handle(ctx)
+            .await
+            .map_err(super::Error::CtxError)?;
+
         // force streaming
         if request.stream.is_none_or(|s| !s) {
             request.stream_options = Some(super::request::StreamOptions {

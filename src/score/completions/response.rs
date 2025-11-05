@@ -318,6 +318,20 @@ pub struct CompletionMetadata {
     pub provider: Option<String>,
 }
 
+impl std::default::Default for CompletionMetadata {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            created: 0,
+            model: String::new(),
+            service_tier: None,
+            system_fingerprint: None,
+            usage: None,
+            provider: None,
+        }
+    }
+}
+
 impl CompletionMetadata {
     pub fn push(
         &mut self,

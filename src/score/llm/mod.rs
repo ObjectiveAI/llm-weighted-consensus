@@ -10,21 +10,22 @@ pub struct LlmBase {
     pub model: String,
 
     // the scoring weight of this LLM
+    #[serde(default)]
     pub weight: Weight,
 
-    // whether to use logprobs
-    // excludes tool_response_format
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub top_logprobs: Option<u64>,
-
-    // whether to use a tool instead of response format
-    // excludes top_logprobs
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_response_format: Option<bool>,
+    // output mode
+    #[serde(default)]
+    pub output_mode: OutputMode,
 
     // whether to use synthetic reasoning for non-reasoning LLMs
+    // excludes output_mode: instruction
     #[serde(skip_serializing_if = "Option::is_none")]
     pub synthetic_reasoning: Option<bool>,
+
+    // whether to use logprobs
+    // changes `vote` to probabilities (if upstream actually provides them)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_logprobs: Option<u64>,
 
     // messages which will precede the user prompt
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -218,15 +219,6 @@ impl LlmBase {
                 *models = None;
             }
         }
-        fn prepare_tool_response_format(
-            tool_response_format: &mut Option<bool>,
-        ) {
-            if let Some(v) = tool_response_format
-                && *v == false
-            {
-                *tool_response_format = None;
-            }
-        }
         fn prepare_synthetic_reasoning(synthetic_reasoning: &mut Option<bool>) {
             if let Some(v) = synthetic_reasoning
                 && *v == false
@@ -243,27 +235,26 @@ impl LlmBase {
                 *messages = None;
             }
         }
-        prepare_f64(&mut self.frequency_penalty, 0.0);
-        prepare_f64(&mut self.presence_penalty, 0.0);
-        prepare_f64(&mut self.repetition_penalty, 1.0);
-        prepare_f64(&mut self.temperature, 1.0);
-        prepare_f64(&mut self.top_p, 1.0);
-        prepare_f64(&mut self.min_p, 0.0);
-        prepare_f64(&mut self.top_a, 0.0);
-        prepare_u64(&mut self.max_completion_tokens, 0);
-        prepare_u64(&mut self.max_tokens, 0);
-        prepare_u64(&mut self.top_k, 0);
-        prepare_logit_bias(&mut self.logit_bias);
-        prepare_verbosity(&mut self.verbosity);
-        prepare_stop(&mut self.stop);
-        prepare_reasoning(&mut self.reasoning);
-        prepare_provider(&mut self.provider);
-        prepare_top_logprobs(&mut self.top_logprobs);
-        prepare_models(&mut self.models);
-        prepare_tool_response_format(&mut self.tool_response_format);
         prepare_synthetic_reasoning(&mut self.synthetic_reasoning);
+        prepare_top_logprobs(&mut self.top_logprobs);
         prepare_messages(&mut self.prefix_messages);
         prepare_messages(&mut self.suffix_messages);
+        prepare_f64(&mut self.frequency_penalty, 0.0);
+        prepare_logit_bias(&mut self.logit_bias);
+        prepare_u64(&mut self.max_completion_tokens, 0);
+        prepare_f64(&mut self.presence_penalty, 0.0);
+        prepare_stop(&mut self.stop);
+        prepare_f64(&mut self.temperature, 1.0);
+        prepare_f64(&mut self.top_p, 1.0);
+        prepare_u64(&mut self.max_tokens, 0);
+        prepare_f64(&mut self.min_p, 0.0);
+        prepare_provider(&mut self.provider);
+        prepare_reasoning(&mut self.reasoning);
+        prepare_f64(&mut self.repetition_penalty, 1.0);
+        prepare_f64(&mut self.top_a, 0.0);
+        prepare_u64(&mut self.top_k, 0);
+        prepare_verbosity(&mut self.verbosity);
+        prepare_models(&mut self.models);
     }
 
     pub fn validate(&self, expect: super::WeightType) -> Result<(), String> {
@@ -461,50 +452,61 @@ impl LlmBase {
             }
             Ok(())
         }
-        fn validate_top_logprobs_and_tool_response_format(
+        fn validate_top_logprobs(
             top_logprobs: &Option<u64>,
-            tool_response_format: &Option<bool>,
         ) -> Result<(), String> {
-            if top_logprobs.is_some() && tool_response_format.is_some_and(|v| v)
-            {
-                return Err("`tool_response_format` and `top_logprobs` cannot be set at the same time".to_string());
-            }
             if let Some(v) = top_logprobs {
-                if *v > 20 || *v == 0 {
+                if *v > 20 {
                     return Err(format!(
-                        "`top_logprobs` must be between 1 and 20: `top_logprobs`={}",
+                        "`top_logprobs` must be between 0 and 20: `top_logprobs`={}",
                         v
                     ));
                 }
             }
             Ok(())
         }
+        fn validate_synthetic_reasoning(
+            synthetic_reasoning: &Option<bool>,
+            output_mode: OutputMode,
+        ) -> Result<(), String> {
+            if let Some(sr) = synthetic_reasoning {
+                if *sr {
+                    if matches!(output_mode, OutputMode::Instruction) {
+                        return Err(
+                            "`synthetic_reasoning` cannot be true when `output_mode` is `instruction`".to_string()
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        validate_model(&self.model)?;
         self.weight.validate(expect)?;
+        validate_synthetic_reasoning(
+            &self.synthetic_reasoning,
+            self.output_mode,
+        )?;
+        validate_top_logprobs(&self.top_logprobs)?;
         validate_f64(self.frequency_penalty, "frequency_penalty", -2.0, 2.0)?;
-        validate_f64(self.presence_penalty, "presence_penalty", -2.0, 2.0)?;
-        validate_f64(self.repetition_penalty, "repetition_penalty", 0.0, 2.0)?;
-        validate_f64(self.temperature, "temperature", 0.0, 2.0)?;
-        validate_f64(self.top_p, "top_p", 0.0, 1.0)?;
-        validate_f64(self.min_p, "min_p", 0.0, 1.0)?;
-        validate_f64(self.top_a, "top_a", 0.0, 1.0)?;
+        validate_logit_bias(&self.logit_bias)?;
         validate_u64(
             self.max_completion_tokens,
             "max_completion_tokens",
             0,
             i32::MAX as u64,
         )?;
-        validate_u64(self.max_tokens, "max_tokens", 0, i32::MAX as u64)?;
-        validate_u64(self.top_k, "top_k", 0, i32::MAX as u64)?;
-        validate_reasoning(self.reasoning)?;
-        validate_model(&self.model)?;
-        validate_logit_bias(&self.logit_bias)?;
+        validate_f64(self.presence_penalty, "presence_penalty", -2.0, 2.0)?;
         validate_stop(&self.stop)?;
+        validate_f64(self.temperature, "temperature", 0.0, 2.0)?;
+        validate_f64(self.top_p, "top_p", 0.0, 1.0)?;
+        validate_u64(self.max_tokens, "max_tokens", 0, i32::MAX as u64)?;
+        validate_f64(self.min_p, "min_p", 0.0, 1.0)?;
         validate_provider(&self.provider)?;
+        validate_reasoning(self.reasoning)?;
+        validate_f64(self.repetition_penalty, "repetition_penalty", 0.0, 2.0)?;
+        validate_f64(self.top_a, "top_a", 0.0, 1.0)?;
+        validate_u64(self.top_k, "top_k", 0, i32::MAX as u64)?;
         validate_models(&self.model, &self.models)?;
-        validate_top_logprobs_and_tool_response_format(
-            &self.top_logprobs,
-            &self.tool_response_format,
-        )?;
         Ok(())
     }
 
@@ -582,7 +584,7 @@ impl std::default::Default for Weight {
     fn default() -> Self {
         Weight::Static(WeightStatic {
             r#type: super::WeightStaticType::Static,
-            weight: 0.0,
+            weight: 1.0,
         })
     }
 }
@@ -670,6 +672,20 @@ impl WeightTrainingTable {
         } else {
             Ok(())
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputMode {
+    Instruction, // instructed to output a key
+    JsonSchema, // response format json schema containing an enum of possible keys
+    ToolCall, // forced tool with argument schema containing an enum of possible keys
+}
+
+impl std::default::Default for OutputMode {
+    fn default() -> Self {
+        OutputMode::Instruction
     }
 }
 

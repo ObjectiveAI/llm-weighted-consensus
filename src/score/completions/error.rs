@@ -10,10 +10,8 @@ pub enum Error {
     InvalidModel(String),
     #[error("expected 2 or more provided choices but got {0}")]
     ExpectedTwoOrMoreChoices(usize),
-    #[error("expected a valid choice id but got {0}")]
-    InvalidSelection(String),
-    #[error("expected valid JSON content: {0}")]
-    InvalidChoiceContent(#[from] serde_path_to_error::Error<serde_json::Error>),
+    #[error("expected a valid response key")]
+    InvalidContent,
     #[error(transparent)]
     Chat(#[from] chat::completions::Error),
     #[error("all votes failed, see choices for further details")]
@@ -27,8 +25,7 @@ impl error::StatusError for Error {
             Error::FetchModelWeights(e) => e.status(),
             Error::InvalidModel(_) => 400,
             Error::ExpectedTwoOrMoreChoices(_) => 400,
-            Error::InvalidSelection(_) => 500,
-            Error::InvalidChoiceContent(_) => 500,
+            Error::InvalidContent => 500,
             Error::Chat(e) => e.status(),
             Error::AllVotesFailed(Some(code)) => *code,
             Error::AllVotesFailed(None) => 500,
@@ -49,13 +46,9 @@ impl error::StatusError for Error {
                     "kind": "expected_two_or_more_choices",
                     "error": format!("expected 2 or more provided choices but got {}", n),
                 })),
-                Error::InvalidSelection(e) => Some(serde_json::json!({
-                    "kind": "invalid_selection",
-                    "error": e,
-                })),
-                Error::InvalidChoiceContent(e) => Some(serde_json::json!({
-                    "kind": "invalid_choice_content",
-                    "error": e.to_string(),
+                Error::InvalidContent => Some(serde_json::json!({
+                    "kind": "invalid_content",
+                    "error": "expected a valid response key",
                 })),
                 Error::Chat(e) => e.message(),
                 Error::AllVotesFailed(_) => Some(serde_json::json!({

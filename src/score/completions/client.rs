@@ -3,19 +3,12 @@ use crate::{
     chat, score,
     util::{ChoiceIndexer, StreamOnce},
 };
-use futures::{
-    Stream, StreamExt, TryStreamExt, 
-};
+use futures::{Stream, StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use rand::{Rng, seq::SliceRandom};
 use regex::Regex;
 use serde::ser::SerializeMap;
-use std::{
-    collections::HashMap,
-    hash::Hash,
-    sync::{Arc, LazyLock},
-    time,
-};
+use std::{hash::Hash, sync::Arc, time};
 
 pub fn response_id(created: u64) -> String {
     let uuid = uuid::Uuid::new_v4();
@@ -25,12 +18,13 @@ pub fn response_id(created: u64) -> String {
 pub struct Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> {
     pub chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
     pub model_fetcher: Arc<FMODEL>,
-    pub weight_fetchers: Arc<
-        score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>,
-    >,
+    pub weight_fetchers:
+        Arc<score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>>,
 }
 
-impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> {
+impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
+    Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
+{
     pub fn new(
         chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
         model_fetcher: Arc<FMODEL>,
@@ -125,19 +119,26 @@ where
                 } else {
                     match id.split("/").last() {
                         // 22 character id with author prefix, fetch model
-                        Some(slug) if slug.len() == 22 => {
-                            self.model_fetcher
-                                .fetch(slug)
-                                .await
-                                .map_err(|e| super::Error::FetchModel(e))?
-                        },
+                        Some(slug) if slug.len() == 22 => self
+                            .model_fetcher
+                            .fetch(slug)
+                            .await
+                            .map_err(|e| super::Error::FetchModel(e))?,
                         // JSON string model, parse and validate
-                        _ => match serde_json::from_str::<score::model::ModelBase>(&id) {
-                            Ok(provided) => provided
-                                .into_model_validate()
-                                .map_err(|e| super::Error::InvalidModel(e))?,
-                            Err(_) => return Err(super::Error::InvalidModel(id)),
-                        },
+                        _ => {
+                            match serde_json::from_str::<score::model::ModelBase>(
+                                &id,
+                            ) {
+                                Ok(provided) => {
+                                    provided.into_model_validate().map_err(
+                                        |e| super::Error::InvalidModel(e),
+                                    )?
+                                }
+                                Err(_) => {
+                                    return Err(super::Error::InvalidModel(id));
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -279,7 +280,7 @@ where
                 }
             }
 
-            // yield final chunk with: 
+            // yield final chunk with:
             // - weight data
             // - usage
             // - confidence for each choice
@@ -345,6 +346,7 @@ where
             choices,
             ..
         } = &*request;
+        let choices_len = choices.len();
         let mut messages = messages.clone();
         if let Some(mut prefix_messages) = llm.base.prefix_messages {
             prefix_messages.extend(messages);
@@ -360,14 +362,14 @@ where
             // create the prefixes
             let pfx_tree = SelectPfxTree::new(
                 &mut rng,
-                choices.len(),
+                choices_len,
                 match llm.base.top_logprobs {
                     Some(top_logprobs) => top_logprobs as usize,
                     None => 20,
                 },
             );
             // map prefix to choice index
-            let pfx_indices = pfx_tree.pfx_indices(&mut rng, choices.len());
+            let pfx_indices = pfx_tree.pfx_indices(&mut rng, choices_len);
             // serialize choices
             let choices_string = SelectPfxTree::json_serialize_select_choices(
                 &choices,
@@ -376,14 +378,33 @@ where
             (pfx_tree, pfx_indices, choices_string)
         };
 
+        // all possible selectable response keys
+        let choices_keys = pfx_indices
+            .into_iter()
+            .map(|(pfx, _)| pfx)
+            .collect::<Vec<_>>();
+
+        let (
+            // regex capture pattern matching response keys as-is
+            choices_key_pattern,
+            // regex capture pattern matching response keys stripped of first and last tick
+            choices_key_pattern_stripped,
+        ) = pfx_tree.regex_patterns(&choices_keys);
+
         // add selection to prompt
-        let content = format!(
-            "Select the response:\n\n{}",
-            choices_string
-        );
-        if let Some(chat::completions::request::Message::System(
-            last_message,
-        )) = messages.last_mut()
+        let content = match llm.base.output_mode {
+            score::llm::OutputMode::Instruction => format!(
+                "Select the response:\n\n{}\n\nOutput one response key: {{{}}}",
+                choices_string,
+                choices_keys.join(", ")
+            ),
+            score::llm::OutputMode::JsonSchema
+            | score::llm::OutputMode::ToolCall => {
+                format!("Select the response:\n\n{}", choices_string)
+            }
+        };
+        if let Some(chat::completions::request::Message::System(last_message)) =
+            messages.last_mut()
         {
             match last_message.content {
                 chat::completions::request::SimpleContent::Text(
@@ -412,20 +433,53 @@ where
             ));
         }
 
-        // force assistant to output the prefix of a choice
+        // potentially force assistant to output the prefix of a choice
+        // maybe the compiler skips this when it goes unused (e.g. OutputMode::Instruction)
         let response_format = ResponseKey::response_format(
-            pfx_indices.into_iter().map(|(pfx, _)| pfx).collect(),
+            choices_keys,
             llm.base.synthetic_reasoning.unwrap_or(false),
         );
 
         // if 'tool_response_format' use a required tool instead of response_format
-        let (tool_response_format, response_format, tools, tool_choice) = match (
-            llm.base.tool_response_format,
+        let (response_format, tools, tool_choice) = match (
+            llm.base.output_mode,
             response_format,
             readonly_tools,
         ) {
             (
-                Some(true),
+                score::llm::OutputMode::Instruction,
+                _,
+                Some(tools_param),
+            ) if !tools_param.is_empty() => {
+                (
+                    None,
+                    Some(tools_param.clone()),
+                    Some(chat::completions::request::ToolChoice::None),
+                )
+            },
+            (
+                score::llm::OutputMode::Instruction,
+                _,
+                _,
+            ) => (None, None, None),
+            (
+                score::llm::OutputMode::JsonSchema,
+                response_format,
+                Some(tools_param),
+            ) if !tools_param.is_empty() => {
+                (
+                    Some(response_format),
+                    Some(tools_param.clone()),
+                    Some(chat::completions::request::ToolChoice::None),
+                )
+            },
+            (
+                score::llm::OutputMode::JsonSchema,
+                response_format,
+                _,
+            ) => (Some(response_format), None, None),
+            (
+                score::llm::OutputMode::ToolCall,
                 chat::completions::request::ResponseFormat::JsonSchema {
                     json_schema: chat::completions::request::JsonSchema {
                         name,
@@ -436,7 +490,6 @@ where
                 },
                 tools_param,
             ) => (
-                true,
                 None,
                 Some({
                     let mut tools = tools_param.clone().unwrap_or_default();
@@ -461,22 +514,10 @@ where
                 )),
             ),
             (
+                score::llm::OutputMode::ToolCall,
                 _,
-                response_format,
-                Some(tools_param),
-            ) if !tools_param.is_empty() => {
-                (
-                    false,
-                    Some(response_format),
-                    Some(tools_param.clone()),
-                    Some(chat::completions::request::ToolChoice::None),
-                )
-            },
-            (
                 _,
-                response_format,
-                _,
-            ) => (false, Some(response_format), None, None),
+            ) => unreachable!(),
         };
 
         // stream
@@ -564,10 +605,8 @@ where
         };
 
         // only return error if the very first stream item is an error
-        let mut current = Some(match stream.try_next().await {
-            Ok(Some(chunk)) => chunk,
-            // chat client will always yield at least 1 chunk or error
-            Ok(None) => unreachable!(),
+        let mut next_chat_chunk = match stream.try_next().await {
+            Ok(Some(chunk)) => Some(chunk),
             Err(e) => {
                 return StreamOnce::new(
                     super::response::streaming::ChatCompletionChunk {
@@ -599,28 +638,45 @@ where
                 )
                 .boxed();
             }
-        });
+            Ok(None) => {
+                // chat client will always yield at least 1 chunk or error
+                unreachable!()
+            }
+        };
+
+        // the final chunk
+        let mut final_chunk: Option<
+            super::response::streaming::ChatCompletionChunk,
+        > = None;
 
         // the aggregate of all chunks
         let mut aggregate: Option<
             super::response::streaming::ChatCompletionChunk,
         > = None;
 
-        // select chunkers
-        let mut chunkers: HashMap<u64, SelectChunker> =
-            HashMap::with_capacity(1);
-
         async_stream::stream! {
-            while let Some(result) = stream.next().await {
-                // errors go into individual choices
-                let (prev, error) = match result {
-                    Ok(chunk) => (current.replace(chunk).unwrap(), None),
-                    Err(e) => (current.take().unwrap(), Some(crate::error::ResponseError::from(&e))),
+            while let Some(chat_chunk) = next_chat_chunk.take() {
+                // fetch the next chat chunk or error
+                let error = match stream.next().await {
+                    Some(Ok(ncc)) => {
+                        // set next chat chunk
+                        next_chat_chunk = Some(ncc);
+                        None
+                    }
+                    Some(Err(e)) => {
+                        // end the loop after this iteration
+                        // add error to choices
+                        Some(crate::error::ResponseError::from(&e))
+                    }
+                    None => {
+                        // end the loop after this iteration
+                        None
+                    }
                 };
-                let error_is_some = error.is_some();
+                // construct the score completions chunk from the chat completions chunk
                 let mut chunk = super::response::streaming::ChatCompletionChunk {
                     id: response_id.clone(),
-                    choices: prev.choices.into_iter().map(|choice| {
+                    choices: chat_chunk.choices.into_iter().map(|choice| {
                         super::response::streaming::Choice {
                             delta: super::response::streaming::Delta {
                                 inner: choice.delta,
@@ -639,13 +695,13 @@ where
                             model: Some(llm.id.clone()),
                             model_index: Some(llm.index),
                             completion_metadata: Some(super::response::CompletionMetadata {
-                                id: prev.id.clone(),
-                                created: prev.created,
-                                model: prev.model.clone(),
-                                service_tier: prev.service_tier,
-                                system_fingerprint: prev.system_fingerprint.clone(),
-                                usage: prev.usage.clone(),
-                                provider: prev.provider.clone(),
+                                id: chat_chunk.id.clone(),
+                                created: chat_chunk.created,
+                                model: chat_chunk.model.clone(),
+                                service_tier: chat_chunk.service_tier,
+                                system_fingerprint: chat_chunk.system_fingerprint.clone(),
+                                usage: chat_chunk.usage.clone(),
+                                provider: chat_chunk.provider.clone(),
                             }),
                         }
                     }).collect(),
@@ -655,18 +711,14 @@ where
                     usage: None,
                     weight_data: None,
                 };
-                if tool_response_format {
+                // convert tool calls to content if needed
+                if matches!(
+                    llm.base.output_mode,
+                    score::llm::OutputMode::ToolCall,
+                ) {
                     chunk.tool_as_content();
                 }
-                for choice in &mut chunk.choices {
-                    let chunker = chunkers.entry(choice.index).or_insert_with(||
-                        SelectChunker::new(
-                            pfx_tree.clone(),
-                            request.choices.len(),
-                        )
-                    );
-                    chunker.handle(choice);
-                }
+                // push the chunk into the aggregate
                 match aggregate {
                     Some(ref mut aggregate) => {
                         aggregate.push(&chunk);
@@ -675,98 +727,45 @@ where
                         aggregate = Some(chunk.clone());
                     }
                 }
-                if error_is_some {
-                    // once we encounter an error, the stream is over
-                    for choice in &mut chunk.choices {
-                        let chunker = match chunkers.remove(&choice.index) {
-                            Some(chunker) => chunker,
-                            None => SelectChunker::new(
-                                pfx_tree.clone(),
-                                request.choices.len(),
-                            )
-                        };
-                        chunker.handle_final(choice);
+                // split off finished choices, to be yielded later
+                match (&mut final_chunk, split_off_finished_choices(&mut chunk)) {
+                    (Some(final_chunk), Some(next_final_chunk)) => {
+                        final_chunk.push(&next_final_chunk);
                     }
+                    (None, Some(next_final_chunk)) => {
+                        final_chunk = Some(next_final_chunk);
+                    }
+                    (_, None) => {}
+                }
+                // yield chunk if it contains any unfinished choices
+                if chunk.choices.len() > 0 {
                     yield chunk;
-                    return;
                 }
-                yield chunk;
             }
-            let current = current.unwrap();
-            let mut chunk = super::response::streaming::ChatCompletionChunk {
-                id: response_id.clone(),
-                choices: current.choices.into_iter().map(|choice| {
-                    super::response::streaming::Choice {
-                        delta: super::response::streaming::Delta {
-                            inner: choice.delta,
-                            vote: None,
-                        },
-                        finish_reason: 
-                            choice.finish_reason,
-                        index: indexer.get(llm.index, choice.index),
-                        logprobs: choice.logprobs,
-                        weight: Some(weight),
-                        confidence: None,
-                        error: None,
-                        model: Some(llm.id.clone()),
-                        model_index: Some(llm.index),
-                        completion_metadata: Some(super::response::CompletionMetadata {
-                            id: current.id.clone(),
-                            created: current.created,
-                            model: current.model.clone(),
-                            service_tier: current.service_tier,
-                            system_fingerprint: current.system_fingerprint.clone(),
-                            usage: current.usage.clone(),
-                            provider: current.provider.clone(),
-                        }),
-                    }
-                }).collect(),
-                created,
-                model: request.model.unwrap_id().to_owned(),
-                object: chat::completions::response::streaming::Object::ChatCompletionChunk,
-                usage: None,
-                weight_data: None,
-            };
-            if tool_response_format {
-                chunk.tool_as_content();
-            }
-            for choice in &mut chunk.choices {
-                let chunker = chunkers.entry(choice.index).or_insert_with(||
-                    SelectChunker::new(
-                        pfx_tree.clone(),
-                        request.choices.len(),
-                    )
-                );
-                chunker.handle(choice);
-            }
-            let mut aggregate = match aggregate {
-                Some(mut aggregate) => {
-                    aggregate.push(&chunk);
-                    aggregate
-                }
-                None => {
-                    chunk.clone()
-                }
-            };
-            yield chunk;
 
-            // yield synthetic reasonings and votes
-            for choice in &mut aggregate.choices {
-                choice.delta.inner.refusal = None;
-                choice.delta.inner.tool_calls = None;
-                choice.delta.inner.reasoning = None;
-                choice.delta.inner.images = None;
-                let chunker = match chunkers.remove(&choice.index) {
-                    Some(chunker) => chunker,
-                    None => SelectChunker::new(
-                        pfx_tree.clone(),
-                        request.choices.len(),
-                    )
-                };
-                chunker.handle_final(choice);
-                choice.delta.inner.content = None;
+            let aggregate = aggregate.unwrap();
+            let mut final_chunk = final_chunk.unwrap();
+
+            // final chunk including votes
+            for choice in &mut final_chunk.choices {
+                let aggregate_choice = aggregate.choices.iter().find(|c| c.index == choice.index).unwrap();
+                match get_vote(
+                    pfx_tree.clone(),
+                    &choices_key_pattern,
+                    &choices_key_pattern_stripped,
+                    choices_len,
+                    aggregate_choice,
+                ) {
+                    Ok(vote) => choice.delta.vote = Some(vote),
+                    Err(e) => {
+                        if choice.error.is_none() {
+                            choice.error = Some(crate::error::ResponseError::from(&e));
+                            choice.finish_reason = Some(chat::completions::response::FinishReason::Error);
+                        }
+                    }
+                }
             }
-            yield aggregate;
+            yield final_chunk;
         }.boxed()
     }
 }
@@ -774,6 +773,7 @@ where
 #[derive(Debug, serde::Deserialize)]
 struct ResponseKey {
     _think: Option<String>,
+    #[allow(dead_code)]
     response_key: String,
 }
 
@@ -1030,6 +1030,51 @@ impl SelectPfxTree {
         }
     }
 
+    fn get(&self, pfx: SelectPfx) -> Option<SelectPfxTree> {
+        match self {
+            SelectPfxTree::Branch(branch) => branch.get(&pfx).cloned(),
+            SelectPfxTree::Leaf(_) => None,
+        }
+    }
+
+    // fn is_leaf_branch(&self) -> bool {
+    //     match self {
+    //         SelectPfxTree::Branch(branch) => branch
+    //             .values()
+    //             .any(|v| matches!(v, SelectPfxTree::Leaf { .. })),
+    //         SelectPfxTree::Leaf(_) => false,
+    //     }
+    // }
+
+    fn depth(&self) -> usize {
+        match self {
+            SelectPfxTree::Branch(branch) => {
+                1 + branch
+                    .values()
+                    .next() // all sub-branches have the same depth
+                    .map(|v| v.depth())
+                    .unwrap_or(0)
+            }
+            SelectPfxTree::Leaf(_) => 0,
+        }
+    }
+
+    // fn unwrap_branch(self) -> Arc<IndexMap<SelectPfx, SelectPfxTree>> {
+    //     match self {
+    //         SelectPfxTree::Branch(branch) => branch,
+    //         SelectPfxTree::Leaf(_) => panic!("Called unwrap_branch on a Leaf"),
+    //     }
+    // }
+
+    fn unwrap_leaf(&self) -> usize {
+        match self {
+            SelectPfxTree::Leaf(index) => *index,
+            SelectPfxTree::Branch(_) => {
+                panic!("Called unwrap_leaf on a Branch")
+            }
+        }
+    }
+
     fn json_serialize_select_choices(
         choices: &[String],
         indices: &[(String, usize)],
@@ -1055,382 +1100,197 @@ impl SelectPfxTree {
             .unwrap()
     }
 
-    fn get(&self, pfx: SelectPfx) -> Option<SelectPfxTree> {
-        match self {
-            SelectPfxTree::Branch(branch) => branch.get(&pfx).cloned(),
-            SelectPfxTree::Leaf(_) => None,
+    fn regex_patterns(&self, keys: &[String]) -> (String, String) {
+        let depth = self.depth();
+        let mut with_ticks = String::with_capacity(
+            (keys.len() - 1) // '|' characters
+                + (keys.len() * depth * 3) // each key
+                + keys.len() * 2, // parentheses
+        );
+        let mut without_ticks = String::with_capacity(
+            (keys.len() - 1) // for '|' characters
+                + keys.len() * (depth * 3 - 2) // each key stripped of ticks
+                + keys.len() * 2, // parentheses
+        );
+        for key in keys {
+            if with_ticks.len() > 0 {
+                with_ticks.push('|');
+                without_ticks.push('|');
+            }
+            with_ticks.push('(');
+            without_ticks.push('(');
+            with_ticks.push_str(key);
+            without_ticks.push_str(&key[1..key.len() - 1]); // strip ticks
+            with_ticks.push(')');
+            without_ticks.push(')');
         }
-    }
-
-    fn is_leaf_branch(&self) -> bool {
-        match self {
-            SelectPfxTree::Branch(branch) => branch
-                .values()
-                .any(|v| matches!(v, SelectPfxTree::Leaf { .. })),
-            SelectPfxTree::Leaf(_) => false,
-        }
+        (with_ticks, without_ticks)
     }
 }
 
-struct SelectChunker {
-    pfx_tree: SelectPfxTree,
-    pfx_tree_depth: usize,
-    choice_len: usize,
-    native_reasoning: bool,
-    mode: Option<SelectChunkerMode>,
-    key: Option<String>,
-    prev_char_escaped: bool,
-    logprobs: Option<chat::completions::response::Logprobs>,
-    finish_reason: Option<chat::completions::response::FinishReason>,
-    completion_metadata: Option<super::response::CompletionMetadata>,
-}
-
-impl SelectChunker {
-    pub fn new(pfx_tree: SelectPfxTree, choice_len: usize) -> Self {
-        Self {
-            pfx_tree,
-            pfx_tree_depth: 0,
-            choice_len,
-            native_reasoning: false,
-            mode: None,
-            key: None,
-            prev_char_escaped: false,
-            logprobs: None,
-            finish_reason: None,
-            completion_metadata: None,
+fn split_off_finished_choices(
+    chunk: &mut super::response::streaming::ChatCompletionChunk,
+) -> Option<super::response::streaming::ChatCompletionChunk> {
+    if !chunk
+        .choices
+        .iter()
+        .any(super::response::streaming::Choice::has_finish_reason_or_usage)
+    {
+        return None;
+    }
+    // initialize the finished chunk as a clone with no choices
+    // capacity could be optimized
+    let mut finished_chunk = chunk.clone_without_choices(chunk.choices.len());
+    // prepare to replace chunk.choices with only unfinished choices
+    // capacity could be optimized
+    let mut unfinished_choices = Vec::with_capacity(chunk.choices.len());
+    // distribute choices
+    for choice in chunk.choices.drain(..) {
+        if choice.has_finish_reason_or_usage() {
+            finished_chunk.choices.push(choice);
+        } else {
+            unfinished_choices.push(choice);
         }
     }
+    chunk.choices = unfinished_choices;
+    Some(finished_chunk)
+}
 
-    // returns true if the choice should be yielded
-    pub fn handle(
-        &mut self,
-        super::response::streaming::Choice {
-            delta:
-                super::response::streaming::Delta {
-                    inner:
-                        chat::completions::response::streaming::Delta {
-                            content,
-                            reasoning,
-                            ..
-                        },
-                    ..
-                },
-            logprobs,
-            finish_reason,
-            completion_metadata,
-            ..
-        }: &mut super::response::streaming::Choice,
-    ) {
-        if reasoning.as_ref().is_some_and(|r| !r.is_empty()) {
-            self.native_reasoning = true;
+fn get_vote(
+    mut pfx_tree: SelectPfxTree,
+    with_ticks_pattern: &str,
+    without_ticks_pattern: &str,
+    choices_len: usize,
+    choice: &super::response::streaming::Choice,
+) -> Result<Vec<f64>, super::Error> {
+    // extract content, return if empty
+    let content = match choice.delta.inner.content.as_ref() {
+        Some(content) => Ok(content.as_str()),
+        None => Err(super::Error::InvalidContent),
+    }?;
+
+    // extract response key, return if not found
+    let with_ticks_re = Regex::new(with_ticks_pattern).unwrap();
+    let mut key_match = with_ticks_re.find_iter(content).last();
+    let without_ticks_re = match key_match {
+        Some(_) => None,
+        None => Some(Regex::new(without_ticks_pattern).unwrap()),
+    };
+    if key_match.is_none() {
+        key_match = without_ticks_re
+            .as_ref()
+            .and_then(|re| re.find_iter(content).last());
+    }
+    let key = key_match
+        .map(|cap| cap.as_str())
+        .ok_or(super::Error::InvalidContent)?;
+
+    // get the final prefix
+    let (final_pfx_char, final_pfx) = key
+        .chars()
+        .rev()
+        .map(|c| (c, SelectPfx::from_char(c)))
+        .filter(|(_, pfx)| pfx.is_some())
+        .next()
+        .unwrap();
+    let final_pfx = final_pfx.unwrap();
+
+    // get to the lowest pfx tree branch
+    let mut i = pfx_tree.depth() - 1;
+    if i > 1 {
+        for c in key.chars() {
+            if let Some(pfx) = SelectPfx::from_char(c) {
+                pfx_tree = pfx_tree.get(pfx).unwrap();
+                i -= 1;
+                if i == 0 {
+                    break;
+                }
+            }
         }
-        if let Some(completion_metadata) = completion_metadata {
-            self.completion_metadata = Some(completion_metadata.clone());
-            completion_metadata.usage = None;
-        }
-        self.finish_reason = self.finish_reason.or(finish_reason.take());
-        if matches!(self.mode, Some(SelectChunkerMode::Done)) {
-            return;
-        }
-        let content = match content.as_deref() {
-            Some(content) => content,
-            None => return,
-        };
-        for c in content.chars() {
-            match (c, self.mode, self.prev_char_escaped) {
-                ('\\', Some(SelectChunkerMode::InKey), false) => {
-                    self.prev_char_escaped = true;
-                }
-                ('\\', Some(SelectChunkerMode::InOtherValue), false) => {
-                    self.prev_char_escaped = true;
-                }
-                ('"', None, _) => {
-                    self.mode = Some(SelectChunkerMode::InKey);
-                    self.prev_char_escaped = false;
-                }
-                ('"', Some(SelectChunkerMode::BetweenKeyAndValue), _) => {
-                    self.mode = Some(match self.key.as_deref() {
-                        Some("response_key") => {
-                            SelectChunkerMode::InResponseKeyValue
-                        }
-                        Some(_) => SelectChunkerMode::InOtherValue,
-                        None => unreachable!(),
-                    });
-                    self.key = None;
-                    self.prev_char_escaped = false;
-                }
-                ('"', Some(SelectChunkerMode::InKey), false) => {
-                    self.mode = Some(SelectChunkerMode::BetweenKeyAndValue);
-                }
-                ('"', Some(SelectChunkerMode::InOtherValue), false) => {
-                    self.mode = None;
-                }
-                (
-                    '"',
-                    Some(SelectChunkerMode::InResponseKeyValue),
-                    false,
-                ) => {
-                    self.mode = Some(SelectChunkerMode::Done);
-                    return;
-                }
-                (c, Some(SelectChunkerMode::InKey), _) => {
-                    self.push_to_key(c);
-                    self.prev_char_escaped = false;
-                }
-                (_, Some(SelectChunkerMode::InOtherValue), _) => {
-                    self.prev_char_escaped = false;
-                }
-                // enter tick
-                (
-                    '`',
-                    Some(SelectChunkerMode::InResponseKeyValue),
-                    _,
-                ) => {
-                    self.mode = Some(
-                        SelectChunkerMode::InResponseKeyValueInTick,
-                    );
-                    self.prev_char_escaped = false;
-                }
-                // exit tick
-                (
-                    '`',
-                    Some(SelectChunkerMode::InResponseKeyValueInTick),
-                    _,
-                ) => {
-                    self.mode =
-                        Some(SelectChunkerMode::InResponseKeyValue);
-                }
-                // select pfx
-                (
-                    c,
-                    Some(SelectChunkerMode::InResponseKeyValueInTick),
-                    _,
-                ) => {
-                    let pfx = match SelectPfx::from_char(c) {
-                        Some(pfx) => pfx,
-                        _ => {
-                            self.mode = Some(SelectChunkerMode::Done);
-                            return;
-                        }
-                    };
-                    if self.pfx_tree.is_leaf_branch() {
-                        self.logprobs = logprobs.clone();
-                    } else {
-                        match self.pfx_tree.get(pfx) {
-                            Some(pfx_tree) => {
-                                self.pfx_tree = pfx_tree;
-                                self.pfx_tree_depth += 1;
-                            }
-                            None => {
-                                self.mode = Some(SelectChunkerMode::Done);
-                                return;
-                            }
-                        }
+    }
+    let pfx_tree = match pfx_tree {
+        SelectPfxTree::Branch(branch) => branch,
+        SelectPfxTree::Leaf(_) => unreachable!(),
+    };
+
+    // prepare vote
+    let mut vote = vec![0.0; choices_len];
+
+    // try to get probabilities from logprobs
+    if let Some(chat::completions::response::Logprobs {
+        content: Some(logprobs),
+        ..
+    }) = choice.logprobs.as_ref()
+    {
+        // reverse key to check against
+        let key_rev = key.chars().rev().collect::<String>();
+        // slice as we go
+        let mut key_rev_slice = key_rev.as_str();
+        // keep the relevant logprob
+        let mut key_logprob = None;
+        let mut key_logprob_index = 0;
+        // find the logprob segment that matches the key
+        for logprob in logprobs.into_iter().rev() {
+            let mut i = logprob.token.len();
+            for c in logprob.token.chars().rev() {
+                i -= c.len_utf8();
+                if key_rev_slice.starts_with(c) {
+                    // match
+                    // remove the matched char from the slice
+                    key_rev_slice = &key_rev_slice[c.len_utf8()..];
+                    // keep the logprob that contains the final pfx
+                    if key_logprob.is_none() && c == final_pfx_char {
+                        key_logprob = Some(logprob);
+                        key_logprob_index = i;
                     }
+                    // stop when the full match is found
+                    if key_rev_slice.is_empty() {
+                        break;
+                    }
+                } else if key_rev_slice.len() != key_rev.len() {
+                    // not match
+                    // reset
+                    key_rev_slice = key_rev.as_str();
+                    key_logprob = None;
+                    key_logprob_index = 0;
+                    break;
+                } else {
+                    // unknown
                 }
-                (_, Some(SelectChunkerMode::InResponseKeyValue), _) => {
-                    self.prev_char_escaped = false;
-                }
-                _ => {}
             }
         }
-    }
-
-    pub fn handle_final(
-        mut self,
-        super::response::streaming::Choice {
-            delta:
-                super::response::streaming::Delta {
-                    inner:
-                        chat::completions::response::streaming::Delta {
-                            content,
-                            reasoning,
-                            ..
-                        },
-                    vote,
-                },
-            error,
-            finish_reason,
-            completion_metadata,
-            ..
-        }: &mut super::response::streaming::Choice,
-    ) {
-        static RE_PFX: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"^(?:`[A-T]`)+$"#).unwrap());
-        static RE_PFX_CAP: LazyLock<Regex> =
-            LazyLock::new(|| Regex::new(r#"`([A-T])`"#).unwrap());
-        *finish_reason = self.finish_reason;
-        *completion_metadata = self.completion_metadata;
-        let content = match content.as_deref() {
-            Some(content) => {
-                // remove everything preceding the first '{' or following the final '}'
-                let start = content.find('{').unwrap_or(0);
-                let end = content.rfind('}').map(|i| i + 1).unwrap_or(content.len());
-                if end < start {
-                    // safeguard for if final '}' comes before first '{'
-                    content
-                } else {
-                    &content[start..end]
-                }
-            },
-            None => return,
-        };
-        if !matches!(
-            self.finish_reason,
-            Some(chat::completions::response::FinishReason::Stop),
-        ) {
-            return;
-        }
-        let mut de = serde_json::Deserializer::from_str(content);
-        let ResponseKey {
-            _think,
-            response_key,
-        } = match serde_path_to_error::deserialize(&mut de) {
-            Ok(key) => key,
-            Err(e) => {
-                *error = Some(crate::error::ResponseError::from(
-                    &super::Error::InvalidChoiceContent(e),
-                ));
-                *finish_reason =
-                    Some(chat::completions::response::FinishReason::Error);
-                return;
-            }
-        };
-        if let Some(_think) = _think {
-            *reasoning = Some(format!(
-                "{}{}",
-                reasoning.as_deref().unwrap_or(""),
-                if self.native_reasoning {
-                    format!("\n\n{}", _think)
-                } else {
-                    _think
-                }
-            ));
-        }
-        if !RE_PFX.is_match(&response_key) {
-            *error = Some(crate::error::ResponseError::from(
-                &super::Error::InvalidSelection(response_key.clone()),
-            ));
-            *finish_reason =
-                Some(chat::completions::response::FinishReason::Error);
-            return;
-        }
-
-        // get proportional confidence
-        if let Some(chat::completions::response::Logprobs {
-            content: Some(logprobs),
-            ..
-        }) = self.logprobs
-            && logprobs.len() > 0
-        {
-            for chat::completions::response::Logprob {
+        if key_rev_slice.is_empty() {
+            // get the probabilities
+            let mut probability_sum = 0.0;
+            for chat::completions::response::TopLogprob {
                 token,
-                top_logprobs,
+                logprob,
                 ..
-            } in logprobs
+            } in &key_logprob.as_ref().unwrap().top_logprobs
             {
-                match token
-                    .trim_matches('`')
-                    .chars()
-                    .next()
-                    .map(SelectPfx::from_char)
+                if key_logprob_index < token.len()
+                    && let Some(logprob) = logprob
+                    && let Some(c) = token[key_logprob_index..].chars().next()
+                    && let Some(pfx) = SelectPfx::from_char(c)
+                    && let Some(leaf) = pfx_tree.get(&pfx)
                 {
-                    Some(Some(_)) => {}
-                    _ => continue,
-                };
-                let mut pfx_probabilities =
-                    HashMap::with_capacity(top_logprobs.len());
-                let mut probabilities_sum = 0.0;
-                for chat::completions::response::TopLogprob {
-                    token,
-                    logprob,
-                    ..
-                } in top_logprobs
-                {
-                    if logprob.is_none() {
-                        continue;
-                    }
-                    let pfx = match token
-                        .trim_matches('`')
-                        .chars()
-                        .next()
-                        .map(SelectPfx::from_char)
-                    {
-                        Some(Some(pfx)) => pfx,
-                        _ => continue,
-                    };
-                    let index = match self.pfx_tree.get(pfx) {
-                        Some(SelectPfxTree::Leaf(key)) => key,
-                        _ => continue,
-                    };
-                    let probability = logprob.unwrap().exp();
-                    pfx_probabilities
-                        .entry(pfx)
-                        .and_modify(|(p, _)| *p += probability)
-                        .or_insert((probability, index));
-                    probabilities_sum += probability;
+                    let probability = logprob.exp();
+                    vote[leaf.unwrap_leaf()] += probability;
+                    probability_sum += probability;
                 }
-                if pfx_probabilities.len() <= 1 {
-                    continue;
-                }
-                let mut vote_ = vec![0.0; self.choice_len];
-                for (probability, index) in pfx_probabilities.into_values() {
-                    vote_[index] += probability / probabilities_sum;
-                }
-                *vote = Some(vote_);
-                return;
             }
+            // normalize and return
+            if probability_sum == 0.0 {
+                unreachable!()
+            }
+            for v in &mut vote {
+                *v /= probability_sum;
+            }
+            return Ok(vote);
         }
-
-        // fallback, or no logprobs
-        let captures = RE_PFX_CAP.captures_iter(&response_key);
-        for (i, cap) in captures.enumerate() {
-            if i < self.pfx_tree_depth {
-                continue;
-            }
-            let pfx = SelectPfx::from_char(
-                cap.get(1).unwrap().as_str().chars().next().unwrap(),
-            )
-            .unwrap();
-            self.pfx_tree = match self.pfx_tree.get(pfx) {
-                Some(pfx_tree) => pfx_tree,
-                None => break,
-            };
-            match self.pfx_tree {
-                SelectPfxTree::Branch(_) => {}
-                SelectPfxTree::Leaf(index) => {
-                    let mut vote_ = vec![0.0; self.choice_len];
-                    vote_[index] = 1.0;
-                    *vote = Some(vote_);
-                    return;
-                }
-            }
-        }
-
-        *error = Some(crate::error::ResponseError::from(
-            &super::Error::InvalidSelection(response_key.clone()),
-        ));
-        *finish_reason = Some(chat::completions::response::FinishReason::Error);
     }
 
-    fn push_to_key(&mut self, c: char) {
-        match &mut self.key {
-            Some(key) => {
-                key.push(c);
-            }
-            None => {
-                self.key = Some(c.to_string());
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectChunkerMode {
-    InKey,
-    BetweenKeyAndValue,
-    InResponseKeyValue,
-    InResponseKeyValueInTick,
-    InOtherValue,
-    Done,
+    // fallback, set vote indexed to selected choice to 1.0
+    vote[pfx_tree.get(&final_pfx).unwrap().unwrap_leaf()] = 1.0;
+    Ok(vote)
 }

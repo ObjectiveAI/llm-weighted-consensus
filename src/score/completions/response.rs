@@ -69,6 +69,18 @@ pub mod streaming {
                 push_choice(&mut self.choices, other_choice);
             }
         }
+
+        pub fn clone_without_choices(&self, capacity: usize) -> Self {
+            Self {
+                id: self.id.clone(),
+                choices: Vec::with_capacity(capacity),
+                created: self.created,
+                model: self.model.clone(),
+                object: self.object.clone(),
+                usage: self.usage.clone(),
+                weight_data: self.weight_data.clone(),
+            }
+        }
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -158,6 +170,14 @@ pub mod streaming {
                 }
                 _ => {}
             }
+        }
+
+        pub fn has_finish_reason_or_usage(&self) -> bool {
+            self.finish_reason.is_some()
+                || self
+                    .completion_metadata
+                    .as_ref()
+                    .is_some_and(|m| m.usage.is_some())
         }
     }
 

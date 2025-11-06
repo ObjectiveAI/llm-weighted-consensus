@@ -398,9 +398,9 @@ where
         // add selection to prompt
         let content = match llm.base.output_mode {
             score::llm::OutputMode::Instruction => format!(
-                "Select the response:\n\n{}\n\nOutput one response key: {{{}}}",
+                "Select the response:\n\n{}\n\nOutput exactly one response key including backticks, nothing else:\n- {}",
                 choices_string,
-                choices_keys.join(", ")
+                choices_keys.join("\n- ")
             ),
             score::llm::OutputMode::JsonSchema
             | score::llm::OutputMode::ToolCall => {

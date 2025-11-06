@@ -1234,7 +1234,7 @@ fn get_vote(
         let mut key_logprob = None;
         let mut key_logprob_index = 0;
         // find the logprob segment that matches the key
-        for logprob in logprobs.into_iter().rev() {
+        'outer: for logprob in logprobs.iter().rev() {
             let mut i = logprob.token.len();
             for c in logprob.token.chars().rev() {
                 i -= c.len_utf8();
@@ -1249,7 +1249,7 @@ fn get_vote(
                     }
                     // stop when the full match is found
                     if key_rev_slice.is_empty() {
-                        break;
+                        break 'outer;
                     }
                 } else if key_rev_slice.len() != key_rev.len() {
                     // not match
@@ -1257,7 +1257,6 @@ fn get_vote(
                     key_rev_slice = key_rev.as_str();
                     key_logprob = None;
                     key_logprob_index = 0;
-                    break;
                 } else {
                     // unknown
                 }

@@ -8,6 +8,7 @@ use twox_hash::XxHash3_128;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ModelBase {
     pub llms: Vec<super::llm::LlmBase>,
+    #[serde(default)]
     pub weight: Weight,
 }
 
@@ -139,6 +140,7 @@ pub struct Model {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_table_id: Option<String>,
     pub llms: Vec<super::llm::Llm>,
+    #[serde(default)]
     pub weight: Weight,
 }
 
@@ -147,6 +149,14 @@ pub struct Model {
 pub enum Weight {
     Static(WeightStatic),
     TrainingTable(WeightTrainingTable),
+}
+
+impl std::default::Default for Weight {
+    fn default() -> Self {
+        Weight::Static(WeightStatic {
+            r#type: super::WeightStaticType::Static,
+        })
+    }
 }
 
 impl Weight {

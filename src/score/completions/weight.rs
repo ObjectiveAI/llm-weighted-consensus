@@ -47,7 +47,7 @@ where
         ctx: CTX,
         request: Arc<super::request::ChatCompletionCreateParams>,
         model: score::model::Model,
-    ) -> Result<(Vec<f64>, Data), error::ResponseError> {
+    ) -> Result<(Vec<rust_decimal::Decimal>, Data), error::ResponseError> {
         match model.weight.r#type() {
             score::WeightType::Static => self
                 .r#static
@@ -70,7 +70,7 @@ pub trait Fetcher<CTX, T> {
         ctx: CTX,
         request: Arc<super::request::ChatCompletionCreateParams>,
         model: score::model::Model,
-    ) -> Result<(Vec<f64>, T), error::ResponseError>;
+    ) -> Result<(Vec<rust_decimal::Decimal>, T), error::ResponseError>;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -83,7 +83,8 @@ impl<CTX: Send + Sync + 'static> Fetcher<CTX, StaticData> for StaticFetcher {
         _ctx: CTX,
         _request: Arc<super::request::ChatCompletionCreateParams>,
         model: score::model::Model,
-    ) -> Result<(Vec<f64>, StaticData), error::ResponseError> {
+    ) -> Result<(Vec<rust_decimal::Decimal>, StaticData), error::ResponseError>
+    {
         Ok((
             model
                 .llms
@@ -107,7 +108,10 @@ impl<CTX: Send + Sync + 'static> Fetcher<CTX, TrainingTableData>
         _ctx: CTX,
         _request: Arc<super::request::ChatCompletionCreateParams>,
         _model: score::model::Model,
-    ) -> Result<(Vec<f64>, TrainingTableData), error::ResponseError> {
+    ) -> Result<
+        (Vec<rust_decimal::Decimal>, TrainingTableData),
+        error::ResponseError,
+    > {
         unimplemented!()
     }
 }

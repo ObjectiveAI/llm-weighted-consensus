@@ -7,6 +7,7 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use indexmap::IndexMap;
 use rand::{Rng, seq::SliceRandom};
 use regex::Regex;
+use rust_decimal::MathematicalOps;
 use serde::ser::SerializeMap;
 use std::{hash::Hash, sync::Arc, time};
 
@@ -248,7 +249,7 @@ where
             }
 
             // tally all votes and check for all-error
-            let mut choice_weight = vec![0.0; request.choices.len()];
+            let mut choice_weight = vec![rust_decimal::Decimal::ZERO; request.choices.len()];
             let mut all_choices_error = true;
             let mut all_choices_error_code = None;
             for choice in &aggregate.choices {
@@ -275,7 +276,8 @@ where
                 }
                 if let Some(vote) = &choice.delta.vote {
                     for (i, v) in vote.iter().enumerate() {
-                        choice_weight[i] += *v * choice.weight.unwrap_or(0.0);
+                        choice_weight[i] += *v * choice.weight
+                            .unwrap_or(rust_decimal::Decimal::ZERO);
                     }
                 }
             }
@@ -284,24 +286,26 @@ where
             // - weight data
             // - usage
             // - confidence for each choice
-            let choice_weight_sum = choice_weight.iter().sum::<f64>();
+            let choice_weight_sum = choice_weight
+                .iter()
+                .sum::<rust_decimal::Decimal>();
             aggregate.weight_data = Some(weight_data);
             usage.with_total_cost();
             aggregate.usage = Some(usage);
             for choice in &mut aggregate.choices {
                 if choice.index < request.choices.len() as u64 {
-                    let confidence = if choice_weight_sum > 0.0 {
+                    let confidence = if choice_weight_sum > rust_decimal::Decimal::ZERO {
                         choice_weight[choice.index as usize] / choice_weight_sum
                     } else {
-                        0.0
+                        rust_decimal::Decimal::ZERO
                     };
                     choice.confidence = Some(confidence);
                 } else if let Some(vote) = choice.delta.vote.take() {
                     for (i, v) in vote.into_iter().enumerate() {
-                        let vote_confidence = if choice_weight_sum > 0.0 {
+                        let vote_confidence = if choice_weight_sum > rust_decimal::Decimal::ZERO {
                             choice_weight[i] / choice_weight_sum
                         } else {
-                            0.0
+                            rust_decimal::Decimal::ZERO
                         } * v;
                         choice.confidence = match choice.confidence {
                             Some(c) => Some(c + vote_confidence),
@@ -332,7 +336,7 @@ where
         created: u64,
         indexer: Arc<ChoiceIndexer>,
         llm: score::llm::Llm,
-        weight: f64,
+        weight: rust_decimal::Decimal,
         request: Arc<super::request::ChatCompletionCreateParams>,
     ) -> impl Stream<Item = super::response::streaming::ChatCompletionChunk>
     + Send
@@ -1162,7 +1166,7 @@ fn get_vote(
     without_ticks_pattern: &str,
     choices_len: usize,
     choice: &super::response::streaming::Choice,
-) -> Result<Vec<f64>, super::Error> {
+) -> Result<Vec<rust_decimal::Decimal>, super::Error> {
     // extract content, return if empty
     let content = match choice.delta.inner.content.as_ref() {
         Some(content) => Ok(content.as_str()),
@@ -1214,7 +1218,7 @@ fn get_vote(
     };
 
     // prepare vote
-    let mut vote = vec![0.0; choices_len];
+    let mut vote = vec![rust_decimal::Decimal::ZERO; choices_len];
 
     // try to get probabilities from logprobs
     if let Some(chat::completions::response::Logprobs {
@@ -1261,7 +1265,7 @@ fn get_vote(
         }
         if key_rev_slice.is_empty() {
             // get the probabilities
-            let mut probability_sum = 0.0;
+            let mut probability_sum = rust_decimal::Decimal::ZERO;
             for chat::completions::response::TopLogprob {
                 token,
                 logprob,
@@ -1280,7 +1284,7 @@ fn get_vote(
                 }
             }
             // normalize and return
-            if probability_sum == 0.0 {
+            if probability_sum == rust_decimal::Decimal::ZERO {
                 unreachable!()
             }
             for v in &mut vote {
@@ -1291,6 +1295,7 @@ fn get_vote(
     }
 
     // fallback, set vote indexed to selected choice to 1.0
-    vote[pfx_tree.get(&final_pfx).unwrap().unwrap_leaf()] = 1.0;
+    vote[pfx_tree.get(&final_pfx).unwrap().unwrap_leaf()] =
+        rust_decimal::Decimal::ONE;
     Ok(vote)
 }

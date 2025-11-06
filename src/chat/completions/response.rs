@@ -765,7 +765,7 @@ impl Logprobs {
 pub struct Logprob {
     pub token: String,
     pub bytes: Option<Vec<u8>>,
-    pub logprob: f64,
+    pub logprob: rust_decimal::Decimal,
     pub top_logprobs: Vec<TopLogprob>,
 }
 
@@ -773,7 +773,7 @@ pub struct Logprob {
 pub struct TopLogprob {
     pub token: String,
     pub bytes: Option<Vec<u8>>,
-    pub logprob: Option<f64>,
+    pub logprob: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]

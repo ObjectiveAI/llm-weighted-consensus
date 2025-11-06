@@ -23,7 +23,7 @@ reqwest = { version = "0.12.15", default-features = false, features = ["charset"
 thiserror = {  version = "2.0.12" }
 serde_path_to_error = { version = "0.1.17" }
 envconfig = { version = "0.11.0" }
-rust_decimal = { version = "1.37.1", features = ["serde-float"] }
+rust_decimal = { version = "1.37.1", features = ["serde-float", "macros", "maths"] }
 backoff = { version = "0.4.0", features = ["tokio"] }
 rand = { version = "0.9.1" }
 dashmap = { version = "6.1.0" }

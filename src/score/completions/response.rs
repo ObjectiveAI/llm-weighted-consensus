@@ -93,9 +93,9 @@ pub mod streaming {
 
         // custom fields
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub weight: Option<f64>,
+        pub weight: Option<rust_decimal::Decimal>,
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub confidence: Option<f64>,
+        pub confidence: Option<rust_decimal::Decimal>,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub error: Option<crate::error::ResponseError>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -186,7 +186,7 @@ pub mod streaming {
         #[serde(flatten)]
         pub inner: chat::completions::response::streaming::Delta,
         #[serde(skip_serializing_if = "Option::is_none")]
-        pub vote: Option<Vec<f64>>,
+        pub vote: Option<Vec<rust_decimal::Decimal>>,
     }
 
     impl std::default::Default for Delta {
@@ -263,8 +263,8 @@ pub mod unary {
         pub logprobs: Option<chat::completions::response::Logprobs>,
 
         // custom fields
-        pub weight: Option<f64>,
-        pub confidence: Option<f64>,
+        pub weight: Option<rust_decimal::Decimal>,
+        pub confidence: Option<rust_decimal::Decimal>,
         pub error: Option<crate::error::ResponseError>,
         pub model: Option<String>,
         pub model_index: Option<usize>,
@@ -305,7 +305,7 @@ pub mod unary {
     pub struct Message {
         #[serde(flatten)]
         pub inner: chat::completions::response::unary::Message,
-        pub vote: Option<Vec<f64>>,
+        pub vote: Option<Vec<rust_decimal::Decimal>>,
     }
 
     impl From<super::streaming::Delta> for Message {

@@ -584,7 +584,7 @@ impl std::default::Default for Weight {
     fn default() -> Self {
         Weight::Static(WeightStatic {
             r#type: super::WeightStaticType::Static,
-            weight: 1.0,
+            weight: rust_decimal::dec!(1.0),
         })
     }
 }
@@ -629,12 +629,12 @@ impl Weight {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct WeightStatic {
     pub r#type: super::WeightStaticType,
-    pub weight: f64,
+    pub weight: rust_decimal::Decimal,
 }
 
 impl WeightStatic {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.weight.is_normal() || self.weight <= 0.0 {
+        if self.weight <= rust_decimal::Decimal::ZERO {
             Err(format!(
                 "`weight` must be a normal positive number: `weight`={}",
                 self.weight
@@ -648,22 +648,19 @@ impl WeightStatic {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct WeightTrainingTable {
     pub r#type: super::WeightTrainingTableType,
-    pub base_weight: f64,
-    pub min_weight: f64,
-    pub max_weight: f64,
+    pub base_weight: rust_decimal::Decimal,
+    pub min_weight: rust_decimal::Decimal,
+    pub max_weight: rust_decimal::Decimal,
 }
 
 impl WeightTrainingTable {
     pub fn validate(&self) -> Result<(), String> {
-        if !self.base_weight.is_normal()
-            || !self.min_weight.is_normal()
-            || !self.max_weight.is_normal()
-            || self.base_weight < self.min_weight
+        if self.base_weight < self.min_weight
             || self.base_weight > self.max_weight
             || self.min_weight > self.max_weight
-            || self.base_weight <= 0.0
-            || self.min_weight <= 0.0
-            || self.max_weight <= 0.0
+            || self.base_weight <= rust_decimal::Decimal::ZERO
+            || self.min_weight <= rust_decimal::Decimal::ZERO
+            || self.max_weight <= rust_decimal::Decimal::ZERO
         {
             Err(format!(
                 "model must have normal positive base, min, and max weights for training table weights mode: `base_weight={}`, `min_weight={}`, `max_weight={}`",

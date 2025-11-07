@@ -252,7 +252,7 @@ where
             let mut choice_weight = vec![rust_decimal::Decimal::ZERO; request.choices.len()];
             let mut all_choices_error = true;
             let mut all_choices_error_code = None;
-            for choice in &aggregate.choices {
+            for choice in aggregate.choices.iter().skip(request.choices.len()) {
                 if all_choices_error {
                     match (&choice.error, all_choices_error_code) {
                         (None, _) => {

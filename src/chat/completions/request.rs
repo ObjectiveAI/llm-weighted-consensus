@@ -171,6 +171,8 @@ pub enum PredictionType {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 pub enum ReasoningEffort {
+    #[serde(rename = "minimal")]
+    Minimal,
     #[serde(rename = "low")]
     Low,
     #[serde(rename = "medium")]

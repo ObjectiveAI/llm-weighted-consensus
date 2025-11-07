@@ -1273,7 +1273,9 @@ fn get_vote(
             {
                 if key_logprob_index < token.len()
                     && let Some(logprob) = logprob
-                    && let Some(c) = token[key_logprob_index..].chars().next()
+                    && let Some((_, c)) = token
+                        .char_indices()
+                        .find(|(i, _)| *i == key_logprob_index)
                     && let Some(pfx) = SelectPfx::from_char(c)
                     && let Some(leaf) = pfx_tree.get(&pfx)
                 {

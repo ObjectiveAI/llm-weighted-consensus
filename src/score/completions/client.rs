@@ -1201,7 +1201,7 @@ fn get_vote(
 
     // get to the lowest pfx tree branch
     let mut i = pfx_tree.depth() - 1;
-    if i > 1 {
+    if i > 0 {
         for c in key.chars() {
             if let Some(pfx) = SelectPfx::from_char(c) {
                 pfx_tree = pfx_tree.get(pfx).unwrap();

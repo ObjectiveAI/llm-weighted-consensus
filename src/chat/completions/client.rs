@@ -131,7 +131,7 @@ where
     pub async fn create_streaming(
         self: Arc<Self>,
         ctx: CTX,
-        mut request: super::request::ChatCompletionCreateParams,
+        request: super::request::ChatCompletionCreateParams,
     ) -> Result<
         impl Stream<
             Item = Result<

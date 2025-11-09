@@ -49,8 +49,33 @@ where
     }
 }
 
+#[async_trait::async_trait]
+pub trait Client<CTX> {
+    async fn create_unary(
+        self: Arc<Self>,
+        ctx: CTX,
+        request: super::request::ChatCompletionCreateParams,
+    ) -> Result<super::response::unary::ChatCompletion, super::Error>;
+
+    async fn create_streaming(
+        self: Arc<Self>,
+        ctx: CTX,
+        request: super::request::ChatCompletionCreateParams,
+    ) -> Result<
+        impl Stream<
+            Item = Result<
+                super::response::streaming::ChatCompletionChunk,
+                super::Error,
+            >,
+        > + Send
+        + Unpin
+        + 'static,
+        super::Error,
+    >;
+}
+
 #[derive(Debug, Clone)]
-pub struct Client<CTX, HNDLCTX> {
+pub struct DefaultClient<CTX, HNDLCTX> {
     pub http_client: reqwest::Client,
     pub backoff: ExponentialBackoff,
     pub api_bases: Vec<ApiBase>, // try each in order
@@ -63,7 +88,44 @@ pub struct Client<CTX, HNDLCTX> {
     _ctx: std::marker::PhantomData<CTX>,
 }
 
-impl<CTX, HNDLCTX> Client<CTX, HNDLCTX> {
+#[async_trait::async_trait]
+impl<CTX, HNDLCTX> Client<CTX> for DefaultClient<CTX, HNDLCTX>
+where
+    CTX: Send + Sync + 'static,
+    HNDLCTX: CtxHandler<CTX> + Send + Sync + 'static,
+{
+    async fn create_unary(
+        self: Arc<Self>,
+        ctx: CTX,
+        request: super::request::ChatCompletionCreateParams,
+    ) -> Result<super::response::unary::ChatCompletion, super::Error> {
+        let (response, _api_base) =
+            self.create_unary_return_api_base(ctx, request).await?;
+        Ok(response)
+    }
+
+    async fn create_streaming(
+        self: Arc<Self>,
+        ctx: CTX,
+        request: super::request::ChatCompletionCreateParams,
+    ) -> Result<
+        impl Stream<
+            Item = Result<
+                super::response::streaming::ChatCompletionChunk,
+                super::Error,
+            >,
+        > + Send
+        + Unpin
+        + 'static,
+        super::Error,
+    > {
+        let (stream, _api_base) =
+            self.create_streaming_return_api_base(ctx, request).await?;
+        Ok(stream)
+    }
+}
+
+impl<CTX, HNDLCTX> DefaultClient<CTX, HNDLCTX> {
     pub fn new(
         http_client: reqwest::Client,
         backoff: ExponentialBackoff,
@@ -90,21 +152,11 @@ impl<CTX, HNDLCTX> Client<CTX, HNDLCTX> {
     }
 }
 
-impl<CTX, HNDLCTX> Client<CTX, HNDLCTX>
+impl<CTX, HNDLCTX> DefaultClient<CTX, HNDLCTX>
 where
     CTX: Send + Sync + 'static,
     HNDLCTX: CtxHandler<CTX> + Send + Sync + 'static,
 {
-    pub async fn create_unary(
-        self: Arc<Self>,
-        ctx: CTX,
-        request: super::request::ChatCompletionCreateParams,
-    ) -> Result<super::response::unary::ChatCompletion, super::Error> {
-        let (response, _api_base) =
-            self.create_unary_return_api_base(ctx, request).await?;
-        Ok(response)
-    }
-
     pub async fn create_unary_return_api_base(
         self: Arc<Self>,
         ctx: CTX,
@@ -126,26 +178,6 @@ where
             Some(response) => Ok((response.into(), api_base)),
             None => Err(super::Error::EmptyStream),
         }
-    }
-
-    pub async fn create_streaming(
-        self: Arc<Self>,
-        ctx: CTX,
-        request: super::request::ChatCompletionCreateParams,
-    ) -> Result<
-        impl Stream<
-            Item = Result<
-                super::response::streaming::ChatCompletionChunk,
-                super::Error,
-            >,
-        > + Send
-        + Unpin
-        + 'static,
-        super::Error,
-    > {
-        let (stream, _api_base) =
-            self.create_streaming_return_api_base(ctx, request).await?;
-        Ok(stream)
     }
 
     pub async fn create_streaming_return_api_base(

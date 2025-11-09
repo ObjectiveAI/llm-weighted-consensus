@@ -3,7 +3,9 @@ use axum::{
     response::{IntoResponse, Sse, sse::Event},
 };
 use envconfig::Envconfig;
-use llm_weighted_consensus::{error::StatusError, *};
+use llm_weighted_consensus::{
+    chat::completions::Client, error::StatusError, *,
+};
 use std::{convert::Infallible, sync::Arc};
 use tokio_stream::StreamExt;
 
@@ -91,34 +93,35 @@ async fn main() {
         }]
     });
 
-    let chat_completions_client = Arc::new(chat::completions::Client::new(
-        reqwest::Client::new(),
-        backoff::ExponentialBackoff {
-            current_interval: std::time::Duration::from_millis(
-                backoff_current_interval_millis,
-            ),
-            initial_interval: std::time::Duration::from_millis(
-                backoff_initial_interval_millis,
-            ),
-            randomization_factor: backoff_randomization_factor,
-            multiplier: backoff_multiplier,
-            max_interval: std::time::Duration::from_millis(
-                backoff_max_interval_millis,
-            ),
-            start_time: std::time::Instant::now(),
-            max_elapsed_time: Some(std::time::Duration::from_millis(
-                backoff_max_elapsed_time_millis,
-            )),
-            clock: backoff::SystemClock::default(),
-        },
-        openai_apis,
-        openai_user_agent,
-        openai_x_title,
-        openai_referer,
-        std::time::Duration::from_millis(first_chunk_timeout_millis),
-        std::time::Duration::from_millis(other_chunk_timeout_millis),
-        Arc::new(chat::completions::NoOpCtxHandler::new()),
-    ));
+    let chat_completions_client =
+        Arc::new(chat::completions::DefaultClient::new(
+            reqwest::Client::new(),
+            backoff::ExponentialBackoff {
+                current_interval: std::time::Duration::from_millis(
+                    backoff_current_interval_millis,
+                ),
+                initial_interval: std::time::Duration::from_millis(
+                    backoff_initial_interval_millis,
+                ),
+                randomization_factor: backoff_randomization_factor,
+                multiplier: backoff_multiplier,
+                max_interval: std::time::Duration::from_millis(
+                    backoff_max_interval_millis,
+                ),
+                start_time: std::time::Instant::now(),
+                max_elapsed_time: Some(std::time::Duration::from_millis(
+                    backoff_max_elapsed_time_millis,
+                )),
+                clock: backoff::SystemClock::default(),
+            },
+            openai_apis,
+            openai_user_agent,
+            openai_x_title,
+            openai_referer,
+            std::time::Duration::from_millis(first_chunk_timeout_millis),
+            std::time::Duration::from_millis(other_chunk_timeout_millis),
+            Arc::new(chat::completions::NoOpCtxHandler::new()),
+        ));
 
     let score_model_fetcher = Arc::new(score::model::UnimplementedFetcher);
 

@@ -16,18 +16,18 @@ pub fn response_id(created: u64) -> String {
     format!("rnkcpl-{}-{}", uuid.simple(), created)
 }
 
-pub struct Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE> {
-    pub chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
+pub struct Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE> {
+    pub chat_client: Arc<CCLIENT>,
     pub model_fetcher: Arc<FMODEL>,
     pub weight_fetchers:
         Arc<score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>>,
 }
 
-impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
-    Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
+impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
+    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
 {
     pub fn new(
-        chat_client: Arc<chat::completions::Client<CTX, HNDLCTX>>,
+        chat_client: Arc<CCLIENT>,
         model_fetcher: Arc<FMODEL>,
         weight_fetchers: Arc<
             score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>,
@@ -41,11 +41,11 @@ impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
     }
 }
 
-impl<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
-    Client<CTX, HNDLCTX, FMODEL, FSTATIC, FTRAININGTABLE>
+impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
+    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
 where
     CTX: Clone + Send + Sync + 'static,
-    HNDLCTX: chat::completions::CtxHandler<CTX> + Send + Sync + 'static,
+    CCLIENT: chat::completions::Client<CTX> + Send + Sync + 'static,
     FMODEL: score::model::Fetcher + Send + Sync + 'static,
     FSTATIC: score::completions::weight::Fetcher<CTX, weight::StaticData>
         + Send

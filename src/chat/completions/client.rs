@@ -20,8 +20,11 @@ struct Attempt<'ab> {
 
 #[async_trait::async_trait]
 pub trait CtxHandler<CTX> {
-    async fn handle(&self, ctx: CTX)
-    -> Result<(), crate::error::ResponseError>;
+    async fn handle(
+        &self,
+        ctx: CTX,
+        api_bases: Vec<ApiBase>,
+    ) -> Result<Vec<ApiBase>, crate::error::ResponseError>;
 }
 
 pub struct NoOpCtxHandler<CTX>(std::marker::PhantomData<CTX>);
@@ -40,8 +43,9 @@ where
     async fn handle(
         &self,
         _ctx: CTX,
-    ) -> Result<(), crate::error::ResponseError> {
-        Ok(())
+        api_bases: Vec<ApiBase>,
+    ) -> Result<Vec<ApiBase>, crate::error::ResponseError> {
+        Ok(api_bases)
     }
 }
 
@@ -128,8 +132,9 @@ where
         super::Error,
     > {
         // handle ctx
-        self.ctx_handler
-            .handle(ctx)
+        let api_bases = self
+            .ctx_handler
+            .handle(ctx, self.api_bases.clone())
             .await
             .map_err(super::Error::CtxError)?;
 
@@ -144,9 +149,9 @@ where
         // set up attempts - for each model, try each api_base
         let mut attempts = Vec::with_capacity(
             request.models.as_ref().map_or(1, |m| m.len() + 1)
-                * self.api_bases.len(),
+                * api_bases.len(),
         );
-        for api_base in &self.api_bases {
+        for api_base in &api_bases {
             attempts.push(Attempt {
                 api_base,
                 model: request.model.clone(),

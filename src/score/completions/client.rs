@@ -159,8 +159,14 @@ where
             .map_err(|e| super::Error::FetchModelWeights(e))?;
 
         // track usage
-        let mut usage: chat::completions::response::Usage =
-            chat::completions::response::Usage::default();
+        let mut usage: chat::completions::response::Usage = match &weight_data {
+            super::weight::Data::TrainingTable(ttd) => {
+                ttd.embeddings_response.usage.clone().unwrap_or_default()
+            }
+            super::weight::Data::Static(_) => {
+                chat::completions::response::Usage::default()
+            }
+        };
 
         // create the first chunk, containing the provided choices
         let mut aggregate = super::response::streaming::ChatCompletionChunk {

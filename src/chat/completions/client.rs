@@ -100,10 +100,22 @@ where
         ctx: CTX,
         request: super::request::ChatCompletionCreateParams,
     ) -> Result<super::response::unary::ChatCompletion, super::Error> {
+        let (response, _api_base) =
+            self.create_unary_return_api_base(ctx, request).await?;
+        Ok(response)
+    }
+
+    pub async fn create_unary_return_api_base(
+        self: Arc<Self>,
+        ctx: CTX,
+        request: super::request::ChatCompletionCreateParams,
+    ) -> Result<(super::response::unary::ChatCompletion, ApiBase), super::Error>
+    {
         let mut aggregate: Option<
             super::response::streaming::ChatCompletionChunk,
         > = None;
-        let mut stream = self.create_streaming(ctx, request).await?;
+        let (mut stream, api_base) =
+            self.create_streaming_return_api_base(ctx, request).await?;
         while let Some(response) = stream.try_next().await? {
             match aggregate {
                 Some(ref mut aggregate) => aggregate.push(&response),
@@ -111,7 +123,7 @@ where
             }
         }
         match aggregate {
-            Some(response) => Ok(response.into()),
+            Some(response) => Ok((response.into(), api_base)),
             None => Err(super::Error::EmptyStream),
         }
     }
@@ -129,6 +141,29 @@ where
         > + Send
         + Unpin
         + 'static,
+        super::Error,
+    > {
+        let (stream, _api_base) =
+            self.create_streaming_return_api_base(ctx, request).await?;
+        Ok(stream)
+    }
+
+    pub async fn create_streaming_return_api_base(
+        self: Arc<Self>,
+        ctx: CTX,
+        mut request: super::request::ChatCompletionCreateParams,
+    ) -> Result<
+        (
+            impl Stream<
+                Item = Result<
+                    super::response::streaming::ChatCompletionChunk,
+                    super::Error,
+                >,
+            > + Send
+            + Unpin
+            + 'static,
+            ApiBase,
+        ),
         super::Error,
     > {
         // handle ctx
@@ -192,7 +227,10 @@ where
                 match stream.next().await {
                     Some(Ok(response)) => {
                         // first chunk is good, return stream with this chunk prepended
-                        break Ok(StreamOnce::new(Ok(response)).chain(stream));
+                        break Ok((
+                            StreamOnce::new(Ok(response)).chain(stream),
+                            api_base.clone(),
+                        ));
                     }
                     Some(Err(e)) if i == attempts.len() => {
                         // last attempt error

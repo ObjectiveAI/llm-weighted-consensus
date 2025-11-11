@@ -244,7 +244,6 @@ impl WeightTrainingTable {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeightTrainingTableEmbeddings {
     pub model: String,
-    pub tokenizer: String,
     pub max_tokens: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<chat::completions::request::ProviderPreferences>,
@@ -352,9 +351,6 @@ impl WeightTrainingTableEmbeddings {
         }
         if self.model.is_empty() {
             return Err("`embeddings.model` cannot be empty".to_string());
-        }
-        if self.tokenizer.is_empty() {
-            return Err("`embeddings.tokenizer` cannot be empty".to_string());
         }
         validate_provider(&self.provider)?;
         Ok(())

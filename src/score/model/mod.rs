@@ -2,7 +2,9 @@ mod fetcher;
 
 pub use fetcher::*;
 
+use crate::chat;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use twox_hash::XxHash3_128;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -14,6 +16,7 @@ pub struct ModelBase {
 
 impl ModelBase {
     fn prepare(&mut self) {
+        self.weight.prepare();
         self.llms.iter_mut().for_each(super::llm::LlmBase::prepare);
     }
 
@@ -84,12 +87,11 @@ impl ModelBase {
         hasher.write(weight_json.as_bytes());
         if let Some(training_table_hasher) = &mut training_table_hasher {
             training_table_hasher.write(
-                self.weight
-                    .weight_training_table()
-                    .unwrap()
-                    .embeddings_model
-                    .to_string()
-                    .as_bytes(),
+                serde_json::to_string(
+                    &self.weight.weight_training_table().unwrap().embeddings,
+                )
+                .unwrap()
+                .as_bytes(),
             );
         }
         for super::llm::Llm {
@@ -181,6 +183,13 @@ impl Weight {
         }
     }
 
+    pub fn prepare(&mut self) {
+        match self {
+            Weight::Static(w) => w.prepare(),
+            Weight::TrainingTable(w) => w.prepare(),
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         match self {
             Weight::Static(w) => w.validate(),
@@ -195,6 +204,8 @@ pub struct WeightStatic {
 }
 
 impl WeightStatic {
+    pub fn prepare(&mut self) {}
+
     pub fn validate(&self) -> Result<(), String> {
         Ok(())
     }
@@ -203,11 +214,15 @@ impl WeightStatic {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WeightTrainingTable {
     pub r#type: super::WeightTrainingTableType,
-    pub embeddings_model: String,
+    pub embeddings: WeightTrainingTableEmbeddings,
     pub top: usize,
 }
 
 impl WeightTrainingTable {
+    pub fn prepare(&mut self) {
+        self.embeddings.prepare();
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.top < 1 {
             Err(format!(
@@ -223,5 +238,125 @@ impl WeightTrainingTable {
         } else {
             Ok(())
         }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WeightTrainingTableEmbeddings {
+    pub model: String,
+    pub tokenizer: String,
+    pub max_tokens: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider: Option<chat::completions::request::ProviderPreferences>,
+}
+
+impl WeightTrainingTableEmbeddings {
+    pub fn prepare(&mut self) {
+        if let Some(p) = &mut self.provider {
+            if p.is_empty() {
+                self.provider = None;
+            } else {
+                if let Some(order) = &mut p.order {
+                    if order.is_empty() {
+                        p.order = None;
+                    }
+                }
+                if let Some(true) = p.allow_fallbacks {
+                    p.allow_fallbacks = None;
+                }
+                if let Some(false) = p.require_parameters {
+                    p.require_parameters = None;
+                }
+                if let Some(
+                            chat::completions::request::ProviderPreferencesDataCollection::Allow
+                        ) = p.data_collection
+                        {
+                            p.data_collection = None;
+                        }
+                if let Some(only) = &mut p.only {
+                    only.sort();
+                    if only.is_empty() {
+                        p.only = None;
+                    }
+                }
+                if let Some(ignore) = &mut p.ignore {
+                    ignore.sort();
+                    if ignore.is_empty() {
+                        p.ignore = None;
+                    }
+                }
+                if let Some(quantizations) = &mut p.quantizations {
+                    quantizations.sort();
+                    if quantizations.is_empty() {
+                        p.quantizations = None;
+                    }
+                }
+                if p.is_empty() {
+                    self.provider = None;
+                }
+            }
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        fn validate_strings(
+            value: Option<&[String]>,
+            name: &str,
+        ) -> Result<(), String> {
+            if let Some(value) = value {
+                let mut seen = HashSet::with_capacity(value.len());
+                for s in value {
+                    if s.is_empty() {
+                        return Err(format!(
+                            "`{}` cannot contain empty strings",
+                            name
+                        ));
+                    } else if !seen.insert(s.as_str()) {
+                        return Err(format!(
+                            "`{}` cannot contain duplicate strings: `{}`",
+                            name, s
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+        fn validate_provider(
+            provider: &Option<chat::completions::request::ProviderPreferences>,
+        ) -> Result<(), String> {
+            if let Some(p) = provider {
+                if let Some(order) = &p.order {
+                    validate_strings(Some(order), "provider.order")?;
+                }
+                if let Some(only) = &p.only {
+                    validate_strings(Some(only), "provider.only")?;
+                }
+                if let Some(ignore) = &p.ignore {
+                    validate_strings(Some(ignore), "provider.ignore")?;
+                }
+                if let Some(quantizations) = &p.quantizations {
+                    validate_strings(
+                        Some(quantizations),
+                        "provider.quantizations",
+                    )?;
+                }
+                if let Some(sort) = &p.sort {
+                    if sort.is_empty() {
+                        return Err(
+                            "`provider.sort` cannot be empty".to_string()
+                        );
+                    }
+                }
+            }
+            Ok(())
+        }
+        if self.model.is_empty() {
+            return Err("`embeddings.model` cannot be empty".to_string());
+        }
+        if self.tokenizer.is_empty() {
+            return Err("`embeddings.tokenizer` cannot be empty".to_string());
+        }
+        validate_provider(&self.provider)?;
+        Ok(())
     }
 }

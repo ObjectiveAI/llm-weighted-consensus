@@ -352,6 +352,13 @@ impl WeightTrainingTableEmbeddings {
         if self.model.is_empty() {
             return Err("`embeddings.model` cannot be empty".to_string());
         }
+        if self.max_tokens > i32::MAX as usize {
+            return Err(format!(
+                "`embeddings.max_tokens` must be at most {}: got {}",
+                i32::MAX as usize,
+                self.max_tokens
+            ));
+        }
         validate_provider(&self.provider)?;
         Ok(())
     }

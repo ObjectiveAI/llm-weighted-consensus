@@ -21,9 +21,7 @@ pub struct ChatCompletionCreateParams {
     pub usage: Option<chat::completions::request::Usage>,
 
     // custom fields
-    pub choices: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sort_choices: Option<SortChoices>,
+    pub choices: Vec<Choice>,
 }
 
 impl ChatCompletionCreateParams {
@@ -68,8 +66,51 @@ impl Model {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Choice {
+    Text(String),
+    ChatCompletion {
+        r#type: ChatCompletionChoiceType,
+        id: String,
+        #[serde(default)]
+        choice_index: u64,
+    },
+    ScoreCompletion {
+        r#type: ScoreCompletionChoiceType,
+        id: String,
+        #[serde(default)]
+        choice_index: u64,
+    },
+}
+
+impl Choice {
+    const fn kind_str(&self) -> &'static str {
+        match self {
+            Choice::Text(_) => "Text",
+            Choice::ChatCompletion { .. } => "ChatCompletion",
+            Choice::ScoreCompletion { .. } => "ScoreCompletion",
+        }
+    }
+
+    pub fn unwrap_text(&self) -> &str {
+        match self {
+            Choice::Text(text) => text,
+            _ => panic!(
+                "called `Choice::unwrap_text` on a `{}` value",
+                self.kind_str()
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum SortChoices {
-    Provided,
-    Confidence,
+pub enum ChatCompletionChoiceType {
+    ChatCompletion,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoreCompletionChoiceType {
+    ScoreCompletion,
 }

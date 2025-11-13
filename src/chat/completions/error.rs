@@ -22,37 +22,33 @@ pub enum Error {
     StreamTimeout,
     #[error(transparent)]
     CtxError(error::ResponseError),
+    #[error(transparent)]
+    CompletionsArchiveError(error::ResponseError),
+    #[error("invalid choice_index for completion {0}: {1}")]
+    InvalidCompletionChoiceIndex(String, u64),
 }
 
 impl error::StatusError for Error {
     fn status(&self) -> u16 {
         match self {
-            Error::ReqwestError(e) => e
-                .status()
-                .map(|s| s.as_u16())
-                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
+            Error::ReqwestError(e) => {
+                e.status().map(|s| s.as_u16()).unwrap_or(500)
+            }
             Error::OpenRouterProviderError(e) => e.status(),
-            Error::EmptyStream => {
-                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
-            }
-            Error::DeserializationError(_) => {
-                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
-            }
+            Error::EmptyStream => 500,
+            Error::DeserializationError(_) => 500,
             Error::BadStatus { code, .. } => code.as_u16(),
-            Error::StreamError(reqwest_eventsource::Error::Transport(e)) => e
-                .status()
-                .map(|s| s.as_u16())
-                .unwrap_or(reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()),
+            Error::StreamError(reqwest_eventsource::Error::Transport(e)) => {
+                e.status().map(|s| s.as_u16()).unwrap_or(500)
+            }
             Error::StreamError(
                 reqwest_eventsource::Error::InvalidStatusCode(code, _),
             ) => code.as_u16(),
-            Error::StreamError(_) => {
-                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
-            }
-            Error::StreamTimeout => {
-                reqwest::StatusCode::INTERNAL_SERVER_ERROR.as_u16()
-            }
+            Error::StreamError(_) => 500,
+            Error::StreamTimeout => 500,
             Error::CtxError(e) => e.status(),
+            Error::CompletionsArchiveError(e) => e.status(),
+            Error::InvalidCompletionChoiceIndex(_, _) => 400,
         }
     }
 
@@ -87,6 +83,13 @@ impl error::StatusError for Error {
                 }),
                 Error::CtxError(e) => e.message().unwrap_or_else(|| {
                     serde_json::Value::String("ctx error".to_string())
+                }),
+                Error::CompletionsArchiveError(e) => e.message().unwrap_or_else(|| {
+                    serde_json::Value::String("completions archive error".to_string())
+                }),
+                Error::InvalidCompletionChoiceIndex(id, index) => serde_json::json!({
+                    "kind": "invalid_completion_choice_index",
+                    "error": format!("invalid choice_index for completion {}: {}", id, index),
                 }),
             }
         }))

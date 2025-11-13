@@ -1,30 +1,36 @@
 use super::weight;
 use crate::{
-    chat, score,
+    chat, completions_archive, score,
     util::{ChoiceIndexer, StreamOnce},
 };
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use indexmap::IndexMap;
 use rand::{Rng, seq::SliceRandom};
 use regex::Regex;
 use rust_decimal::MathematicalOps;
 use serde::ser::SerializeMap;
-use std::{hash::Hash, sync::Arc, time};
+use std::{
+    collections::{HashMap, HashSet},
+    hash::Hash,
+    sync::Arc,
+    time,
+};
 
 pub fn response_id(created: u64) -> String {
     let uuid = uuid::Uuid::new_v4();
     format!("rnkcpl-{}-{}", uuid.simple(), created)
 }
 
-pub struct Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE> {
+pub struct Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS> {
     pub chat_client: Arc<CCLIENT>,
     pub model_fetcher: Arc<FMODEL>,
     pub weight_fetchers:
         Arc<score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>>,
+    pub completions_archive_fetcher: Arc<FCOMPLETIONS>,
 }
 
-impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
-    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
+impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS>
+    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS>
 {
     pub fn new(
         chat_client: Arc<CCLIENT>,
@@ -32,21 +38,23 @@ impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
         weight_fetchers: Arc<
             score::completions::weight::Fetchers<CTX, FSTATIC, FTRAININGTABLE>,
         >,
+        completions_archive_fetcher: Arc<FCOMPLETIONS>,
     ) -> Self {
         Self {
             chat_client,
             model_fetcher,
             weight_fetchers,
+            completions_archive_fetcher,
         }
     }
 }
 
-impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
-    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE>
+impl<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS>
+    Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS>
 where
     CTX: Clone + Send + Sync + 'static,
     CCLIENT: chat::completions::Client<CTX> + Send + Sync + 'static,
-    FMODEL: score::model::Fetcher + Send + Sync + 'static,
+    FMODEL: score::model::Fetcher<CTX> + Send + Sync + 'static,
     FSTATIC: score::completions::weight::Fetcher<CTX, weight::StaticData>
         + Send
         + Sync
@@ -55,6 +63,7 @@ where
         + Send
         + Sync
         + 'static,
+    FCOMPLETIONS: completions_archive::Fetcher<CTX> + Send + Sync + 'static,
 {
     pub async fn create_unary(
         self: Arc<Self>,
@@ -105,50 +114,32 @@ where
                 request.choices.len(),
             ));
         }
-        let indexer =
-            Arc::new(ChoiceIndexer::new(request.choices.len() as u64));
 
-        // fetch or validate the score model
-        let model = match request.model {
-            super::request::Model::Id(id) => {
-                // 22 character id, fetch model
-                if id.len() == 22 {
-                    self.model_fetcher
-                        .fetch(&id)
-                        .await
-                        .map_err(|e| super::Error::FetchModel(e))?
-                } else {
-                    match id.split("/").last() {
-                        // 22 character id with author prefix, fetch model
-                        Some(slug) if slug.len() == 22 => self
-                            .model_fetcher
-                            .fetch(slug)
-                            .await
-                            .map_err(|e| super::Error::FetchModel(e))?,
-                        // JSON string model, parse and validate
-                        _ => {
-                            match serde_json::from_str::<score::model::ModelBase>(
-                                &id,
-                            ) {
-                                Ok(provided) => {
-                                    provided.into_model_validate().map_err(
-                                        |e| super::Error::InvalidModel(e),
-                                    )?
-                                }
-                                Err(_) => {
-                                    return Err(super::Error::InvalidModel(id));
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // JSON body model, parse and validate
-            super::request::Model::Provided(provided) => provided
-                .into_model_validate()
-                .map_err(|e| super::Error::InvalidModel(e))?,
-        };
+        // fetch or validate the score model and fetch completions
+        let (model, completions) = tokio::try_join!(
+            fetch_or_validate_score_model(
+                self.model_fetcher.clone(),
+                ctx.clone(),
+                request.model
+            ),
+            fetch_completion_futs_from_choices_and_messages(
+                self.completions_archive_fetcher.clone(),
+                ctx.clone(),
+                &request.choices,
+                &request.messages
+            )
+            .map_err(super::Error::CompletionsArchiveError)
+        )?;
+
+        // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
+        replace_completion_messages_and_completion_choices_with_assistant_messages_and_text_choices(
+            completions,
+            &mut request.choices,
+            &mut request.messages,
+        )?;
+
+        // wrap finalized request in Arc
         let request = Arc::new(request);
 
         // fetch weights
@@ -177,7 +168,7 @@ where
                     choices.push(super::response::streaming::Choice {
                         delta: super::response::streaming::Delta {
                             inner: chat::completions::response::streaming::Delta {
-                                content: Some(choice_.clone()),
+                                content: Some(choice_.unwrap_text().to_owned()),
                                 refusal: None,
                                 role: Some(chat::completions::response::Role::Assistant),
                                 tool_calls: None,
@@ -208,6 +199,8 @@ where
         let mut initial_chunk = Some(aggregate.clone());
 
         // stream
+        let indexer =
+            Arc::new(ChoiceIndexer::new(request.choices.len() as u64));
         Ok(async_stream::stream! {
             let mut vote_stream = futures::stream::select_all(model.llms
                 .iter()
@@ -780,6 +773,242 @@ where
     }
 }
 
+async fn fetch_or_validate_score_model<CTX>(
+    model_fetcher: Arc<impl score::model::Fetcher<CTX> + Send + Sync + 'static>,
+    ctx: CTX,
+    model_param: super::request::Model,
+) -> Result<score::model::Model, super::Error> {
+    match model_param {
+        super::request::Model::Id(id) => {
+            // 22 character id, fetch model
+            if id.len() == 22 {
+                model_fetcher
+                    .fetch(ctx, &id)
+                    .await
+                    .map_err(|e| super::Error::FetchModel(e))
+            } else {
+                match id.split("/").last() {
+                    // 22 character id with author prefix, fetch model
+                    Some(slug) if slug.len() == 22 => model_fetcher
+                        .fetch(ctx, slug)
+                        .await
+                        .map_err(|e| super::Error::FetchModel(e)),
+                    // JSON string model, parse and validate
+                    _ => {
+                        match serde_json::from_str::<score::model::ModelBase>(
+                            &id,
+                        ) {
+                            Ok(provided) => provided
+                                .into_model_validate()
+                                .map_err(|e| super::Error::InvalidModel(e)),
+                            Err(_) => Err(super::Error::InvalidModel(id)),
+                        }
+                    }
+                }
+            }
+        }
+        // JSON body model, parse and validate
+        super::request::Model::Provided(provided) => provided
+            .into_model_validate()
+            .map_err(|e| super::Error::InvalidModel(e)),
+    }
+}
+
+pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
+    completions_archive_fetcher: Arc<
+        impl completions_archive::Fetcher<CTX> + Send + Sync + 'static,
+    >,
+    ctx: CTX,
+    choices: &[super::request::Choice],
+    messages: &[chat::completions::request::Message],
+) -> Result<Vec<completions_archive::Completion>, crate::error::ResponseError> {
+    // first, create a future for each unique completion in choices and messages
+    let mut completions_futs = Vec::new();
+    let mut ids = HashSet::new();
+    for choice in choices {
+        match choice {
+            super::request::Choice::ChatCompletion { id, .. } => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Left(
+                    completions_archive_fetcher
+                        .fetch_chat_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Chat),
+                ));
+            }
+            super::request::Choice::ScoreCompletion { id, .. } => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    completions_archive_fetcher
+                        .fetch_score_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Score),
+                ));
+            }
+            _ => {}
+        }
+    }
+    for message in messages {
+        match message {
+            chat::completions::request::Message::ChatCompletion(
+                chat::completions::request::ChatCompletionMessage {
+                    id, ..
+                },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Left(
+                    completions_archive_fetcher
+                        .fetch_chat_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Chat),
+                ));
+            }
+            chat::completions::request::Message::ScoreCompletion(
+                chat::completions::request::ScoreCompletionMessage {
+                    id, ..
+                },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    completions_archive_fetcher
+                        .fetch_score_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Score),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if completions_futs.is_empty() {
+        Ok(Vec::new())
+    } else {
+        futures::future::try_join_all(completions_futs).await
+    }
+}
+
+// long name but you know what it does
+pub fn replace_completion_messages_and_completion_choices_with_assistant_messages_and_text_choices(
+    completions: Vec<completions_archive::Completion>,
+    choices: &mut Vec<super::request::Choice>,
+    messages: &mut Vec<chat::completions::request::Message>,
+) -> Result<(), super::Error> {
+    if completions.len() == 0 {
+        return Ok(());
+    }
+
+    // map from id to completion
+    let mut id_to_completion = HashMap::with_capacity(completions.len());
+    for completion in completions {
+        let id = match &completion {
+            completions_archive::Completion::Chat(c) => &c.id,
+            completions_archive::Completion::Score(c) => &c.id,
+        };
+        id_to_completion.insert(id.clone(), completion);
+    }
+
+    // replace completion choices with text choices
+    for choice in choices {
+        let (id, choice_index) = match choice {
+            super::request::Choice::ChatCompletion {
+                id, choice_index, ..
+            } => (id, *choice_index),
+            super::request::Choice::ScoreCompletion {
+                id,
+                choice_index,
+                ..
+            } => (id, *choice_index),
+            _ => continue,
+        };
+        // return error if the choice_index is invalid
+        let completion_choice_message_content = match id_to_completion
+            [id.as_str()]
+        {
+            completions_archive::Completion::Chat(ref completion) => completion
+                .choices
+                .iter()
+                .find(|choice| choice.index == choice_index)
+                .and_then(|choice| match choice.message.content {
+                    Some(ref content) if !content.is_empty() => {
+                        Some(content.clone())
+                    }
+                    _ => None,
+                }),
+            completions_archive::Completion::Score(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .and_then(|choice| match choice.message.inner.content {
+                        Some(ref content) if !content.is_empty() => {
+                            Some(content.clone())
+                        }
+                        _ => None,
+                    })
+            }
+        }
+        .ok_or(super::Error::InvalidCompletionChoiceIndex(
+            id.clone(),
+            choice_index,
+        ))?;
+        // replace the completion choice with a text choice
+        *choice =
+            super::request::Choice::Text(completion_choice_message_content);
+    }
+
+    // replace completion messages with assistant message
+    for message in messages {
+        let (id, choice_index, name) = match message {
+            chat::completions::request::Message::ChatCompletion(
+                chat::completions::request::ChatCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
+            chat::completions::request::Message::ScoreCompletion(
+                chat::completions::request::ScoreCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
+            _ => continue,
+        };
+        // return error if the choice_index is invalid
+        let completion_choice_message = match id_to_completion[id.as_str()] {
+            completions_archive::Completion::Chat(ref completion) => completion
+                .choices
+                .iter()
+                .find(|choice| choice.index == choice_index)
+                .map(|choice| choice.message.clone()),
+            completions_archive::Completion::Score(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .map(|choice| choice.message.inner.clone())
+            }
+        }
+        .ok_or(super::Error::InvalidCompletionChoiceIndex(
+            id.clone(),
+            choice_index,
+        ))?;
+        // replace the completion message with an assistant message
+        *message = chat::completions::request::Message::Assistant(
+            chat::completions::convert_completion_choice_message_to_assistant_message(
+                completion_choice_message,
+                name,
+            ),
+        );
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, serde::Deserialize)]
 struct ResponseKey {
     _think: Option<String>,
@@ -1086,12 +1315,12 @@ impl SelectPfxTree {
     }
 
     fn json_serialize_select_choices(
-        choices: &[String],
+        choices: &[super::request::Choice], // guaranteed all text
         indices: &[(String, usize)],
     ) -> String {
         struct OrderedChoices<'a> {
             indices: &'a [(String, usize)],
-            choices: &'a [String],
+            choices: &'a [super::request::Choice],
         }
         impl<'a> serde::Serialize for OrderedChoices<'a> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

@@ -1,10 +1,14 @@
-use crate::util::StreamOnce;
+use crate::{completions_archive, util::StreamOnce};
 use backoff::ExponentialBackoff;
 use eventsource_stream::Event as MessageEvent;
-use futures::{Stream, StreamExt, TryStreamExt};
+use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
 use reqwest_eventsource::{Event, EventSource, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+    time::Duration,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiBase {
@@ -75,7 +79,7 @@ pub trait Client<CTX> {
 }
 
 #[derive(Debug, Clone)]
-pub struct DefaultClient<CTX, HNDLCTX> {
+pub struct DefaultClient<CTX, HNDLCTX, FCOMPLETIONS> {
     pub http_client: reqwest::Client,
     pub backoff: ExponentialBackoff,
     pub api_bases: Vec<ApiBase>, // try each in order
@@ -85,14 +89,46 @@ pub struct DefaultClient<CTX, HNDLCTX> {
     pub first_chunk_timeout: Duration, // timeout for first stream chunk
     pub other_chunk_timeout: Duration, // timeout for other stream chunks
     pub ctx_handler: Arc<HNDLCTX>,
+    pub completions_archive_fetcher: Arc<FCOMPLETIONS>,
     _ctx: std::marker::PhantomData<CTX>,
 }
 
+impl<CTX, HNDLCTX, FCOMPLETIONS> DefaultClient<CTX, HNDLCTX, FCOMPLETIONS> {
+    pub fn new(
+        http_client: reqwest::Client,
+        backoff: ExponentialBackoff,
+        api_bases: Vec<ApiBase>,
+        user_agent: Option<String>,
+        x_title: Option<String>,
+        referer: Option<String>,
+        first_chunk_timeout: Duration,
+        other_chunk_timeout: Duration,
+        ctx_handler: Arc<HNDLCTX>,
+        completions_archive_fetcher: Arc<FCOMPLETIONS>,
+    ) -> Self {
+        Self {
+            http_client,
+            backoff,
+            api_bases,
+            user_agent,
+            x_title,
+            referer,
+            first_chunk_timeout,
+            other_chunk_timeout,
+            ctx_handler,
+            completions_archive_fetcher,
+            _ctx: std::marker::PhantomData,
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl<CTX, HNDLCTX> Client<CTX> for DefaultClient<CTX, HNDLCTX>
+impl<CTX, HNDLCTX, FCOMPLETIONS> Client<CTX>
+    for DefaultClient<CTX, HNDLCTX, FCOMPLETIONS>
 where
-    CTX: Send + Sync + 'static,
+    CTX: Clone + Send + Sync + 'static,
     HNDLCTX: CtxHandler<CTX> + Send + Sync + 'static,
+    FCOMPLETIONS: completions_archive::Fetcher<CTX> + Send + Sync + 'static,
 {
     async fn create_unary(
         self: Arc<Self>,
@@ -125,37 +161,11 @@ where
     }
 }
 
-impl<CTX, HNDLCTX> DefaultClient<CTX, HNDLCTX> {
-    pub fn new(
-        http_client: reqwest::Client,
-        backoff: ExponentialBackoff,
-        api_bases: Vec<ApiBase>,
-        user_agent: Option<String>,
-        x_title: Option<String>,
-        referer: Option<String>,
-        first_chunk_timeout: Duration,
-        other_chunk_timeout: Duration,
-        ctx_handler: Arc<HNDLCTX>,
-    ) -> Self {
-        Self {
-            http_client,
-            backoff,
-            api_bases,
-            user_agent,
-            x_title,
-            referer,
-            first_chunk_timeout,
-            other_chunk_timeout,
-            ctx_handler,
-            _ctx: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<CTX, HNDLCTX> DefaultClient<CTX, HNDLCTX>
+impl<CTX, HNDLCTX, FCOMPLETIONS> DefaultClient<CTX, HNDLCTX, FCOMPLETIONS>
 where
-    CTX: Send + Sync + 'static,
+    CTX: Clone + Send + Sync + 'static,
     HNDLCTX: CtxHandler<CTX> + Send + Sync + 'static,
+    FCOMPLETIONS: completions_archive::Fetcher<CTX> + Send + Sync + 'static,
 {
     pub async fn create_unary_return_api_base(
         self: Arc<Self>,
@@ -198,12 +208,24 @@ where
         ),
         super::Error,
     > {
-        // handle ctx
-        let api_bases = self
-            .ctx_handler
-            .handle(ctx, self.api_bases.clone())
-            .await
-            .map_err(super::Error::CtxError)?;
+        // handle ctx and fetch completions
+        let (api_bases, completions) = tokio::try_join!(
+            self.ctx_handler
+                .handle(ctx.clone(), self.api_bases.clone())
+                .map_err(super::Error::CtxError),
+            fetch_completion_futs_from_messages(
+                self.completions_archive_fetcher.clone(),
+                ctx.clone(),
+                &request.messages,
+            )
+            .map_err(super::Error::CompletionsArchiveError),
+        )?;
+
+        // replace completion messages with assistant messages
+        replace_completion_messages_with_assistant_messages(
+            completions,
+            &mut request.messages,
+        )?;
 
         // force streaming
         if request.stream.is_none_or(|s| !s) {
@@ -409,5 +431,183 @@ where
                 }
             }
         }
+    }
+}
+
+pub async fn fetch_completion_futs_from_messages<CTX: Clone>(
+    completions_archive_fetcher: Arc<
+        impl completions_archive::Fetcher<CTX> + Send + Sync + 'static,
+    >,
+    ctx: CTX,
+    messages: &[super::request::Message],
+) -> Result<Vec<completions_archive::Completion>, crate::error::ResponseError> {
+    // first, create a future for each unique completion in choices and messages
+    let mut completions_futs = Vec::new();
+    let mut ids = HashSet::new();
+    for message in messages {
+        match message {
+            super::request::Message::ChatCompletion(
+                super::request::ChatCompletionMessage { id, .. },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Left(
+                    completions_archive_fetcher
+                        .fetch_chat_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Chat),
+                ));
+            }
+            super::request::Message::ScoreCompletion(
+                super::request::ScoreCompletionMessage { id, .. },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    completions_archive_fetcher
+                        .fetch_score_completion(ctx.clone(), id)
+                        .map_ok(completions_archive::Completion::Score),
+                ));
+            }
+            _ => {}
+        }
+    }
+    if completions_futs.is_empty() {
+        Ok(Vec::new())
+    } else {
+        futures::future::try_join_all(completions_futs).await
+    }
+}
+
+pub fn replace_completion_messages_with_assistant_messages(
+    completions: Vec<completions_archive::Completion>,
+    messages: &mut Vec<super::request::Message>,
+) -> Result<(), super::Error> {
+    if completions.len() == 0 {
+        return Ok(());
+    }
+
+    // map from id to completion
+    let mut id_to_completion = HashMap::with_capacity(completions.len());
+    for completion in completions {
+        let id = match &completion {
+            completions_archive::Completion::Chat(c) => &c.id,
+            completions_archive::Completion::Score(c) => &c.id,
+        };
+        id_to_completion.insert(id.clone(), completion);
+    }
+
+    // replace completion messages with assistant message
+    for message in messages {
+        let (id, choice_index, name) = match message {
+            super::request::Message::ChatCompletion(
+                super::request::ChatCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
+            super::request::Message::ScoreCompletion(
+                super::request::ScoreCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
+            _ => continue,
+        };
+        // return error if the choice_index is invalid
+        let completion_choice_message = match id_to_completion[id.as_str()] {
+            completions_archive::Completion::Chat(ref completion) => completion
+                .choices
+                .iter()
+                .find(|choice| choice.index == choice_index)
+                .map(|choice| choice.message.clone()),
+            completions_archive::Completion::Score(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .map(|choice| choice.message.inner.clone())
+            }
+        }
+        .ok_or(super::Error::InvalidCompletionChoiceIndex(
+            id.clone(),
+            choice_index,
+        ))?;
+        // replace the completion message with an assistant message
+        *message = super::request::Message::Assistant(
+            convert_completion_choice_message_to_assistant_message(
+                completion_choice_message,
+                name,
+            ),
+        );
+    }
+
+    Ok(())
+}
+
+pub fn convert_completion_choice_message_to_assistant_message(
+    message: super::response::unary::Message,
+    name: Option<String>,
+) -> super::request::AssistantMessage {
+    // convert generated images to input image parts
+    let image_parts = message
+        .images
+        .map(|images| {
+            let images_len = images.len();
+            if images_len > 0 {
+                Some((
+                    images.len(),
+                    images.into_iter().map(|image| {
+                        super::request::RichContentPart::ImageUrl {
+                            image_url: super::request::ImageUrl {
+                                url: image.image_url.url,
+                                detail: None,
+                            },
+                        }
+                    }),
+                ))
+            } else {
+                None
+            }
+        })
+        .flatten();
+    // content will be parts if there are images
+    let content = match (message.content, image_parts) {
+        (Some(content), Some((image_parts_len, image_parts))) => {
+            let mut parts = Vec::with_capacity(1 + image_parts_len);
+            parts.push(super::request::RichContentPart::Text { text: content });
+            parts.extend(image_parts);
+            Some(super::request::RichContent::Parts(parts))
+        }
+        (Some(content), None) => {
+            Some(super::request::RichContent::Text(content))
+        }
+        (None, Some((image_parts_len, image_parts))) => {
+            let mut parts = Vec::with_capacity(image_parts_len);
+            parts.extend(image_parts);
+            Some(super::request::RichContent::Parts(parts))
+        }
+        (None, None) => None,
+    };
+    let refusal = message.refusal;
+    // convert response tool calls to assistant request tool calls
+    let tool_calls = message.tool_calls.map(|tcs| {
+        tcs.into_iter()
+            .map(super::request::AssistantToolCall::from)
+            .collect()
+    });
+    // OpenRouter has a field for this, should we use it?
+    // Extra tokens, idk, maybe make it configurable
+    let reasoning = None;
+
+    super::request::AssistantMessage {
+        content,
+        name,
+        refusal,
+        tool_calls,
+        reasoning,
     }
 }

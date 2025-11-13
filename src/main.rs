@@ -93,6 +93,9 @@ async fn main() {
         }]
     });
 
+    let completions_archive_fetcher =
+        Arc::new(completions_archive::UnimplementedFetcher);
+
     let chat_completions_client =
         Arc::new(chat::completions::DefaultClient::new(
             reqwest::Client::new(),
@@ -121,21 +124,18 @@ async fn main() {
             std::time::Duration::from_millis(first_chunk_timeout_millis),
             std::time::Duration::from_millis(other_chunk_timeout_millis),
             Arc::new(chat::completions::NoOpCtxHandler::new()),
+            completions_archive_fetcher.clone(),
         ));
 
-    let score_model_fetcher = Arc::new(score::model::UnimplementedFetcher);
-
-    let score_completions_weight_fetchers =
+    let score_completions_client = Arc::new(score::completions::Client::new(
+        chat_completions_client.clone(),
+        Arc::new(score::model::UnimplementedFetcher),
         Arc::new(score::completions::weight::Fetchers::new(
             score::completions::weight::StaticFetcher,
             score::completions::weight::UnimplementedTrainingTableFetcher,
-        ));
-
-    let score_completions_client = Arc::new(score::completions::Client {
-        chat_client: chat_completions_client.clone(),
-        model_fetcher: score_model_fetcher,
-        weight_fetchers: score_completions_weight_fetchers,
-    });
+        )),
+        completions_archive_fetcher,
+    ));
 
     let app = axum::Router::new()
         // chat completions

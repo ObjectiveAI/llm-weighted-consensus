@@ -1,9 +1,10 @@
 use crate::error;
 
 #[async_trait::async_trait]
-pub trait Fetcher {
+pub trait Fetcher<CTX> {
     async fn fetch(
         &self,
+        ctx: CTX,
         model_id: &str,
     ) -> Result<super::Model, error::ResponseError>;
 }
@@ -11,9 +12,10 @@ pub trait Fetcher {
 pub struct UnimplementedFetcher;
 
 #[async_trait::async_trait]
-impl Fetcher for UnimplementedFetcher {
+impl<CTX: Send + Sync + 'static> Fetcher<CTX> for UnimplementedFetcher {
     async fn fetch(
         &self,
+        _ctx: CTX,
         _model_id: &str,
     ) -> Result<super::Model, error::ResponseError> {
         unimplemented!()

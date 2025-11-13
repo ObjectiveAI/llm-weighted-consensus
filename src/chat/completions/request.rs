@@ -325,6 +325,10 @@ pub enum Message {
     Assistant(AssistantMessage),
     #[serde(rename = "tool")]
     Tool(ToolMessage),
+    #[serde(rename = "chat_completion")]
+    ChatCompletion(ChatCompletionMessage),
+    #[serde(rename = "score_completion")]
+    ScoreCompletion(ScoreCompletionMessage),
 }
 
 impl Message {
@@ -335,6 +339,8 @@ impl Message {
             Message::User(msg) => msg.write_template_content(s),
             Message::Assistant(msg) => msg.write_template_content(s),
             Message::Tool(msg) => msg.write_template_content(s),
+            Message::ChatCompletion(_) => {}
+            Message::ScoreCompletion(_) => {}
         }
     }
 }
@@ -381,7 +387,7 @@ impl SystemMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserMessage {
-    pub content: UserContent,
+    pub content: RichContent,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -401,7 +407,7 @@ impl UserMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMessage {
-    pub content: SimpleContent,
+    pub content: RichContent,
     pub tool_call_id: String,
 }
 
@@ -419,13 +425,15 @@ pub struct AssistantMessage {
     // #[serde(skip_serializing_if = "Option::is_none")]
     // pub audio: Option<AssistantAudio>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<AssistantContent>,
+    pub content: Option<RichContent>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub refusal: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<AssistantToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<String>,
 }
 
 impl AssistantMessage {
@@ -467,6 +475,24 @@ impl AssistantMessage {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCompletionMessage {
+    pub id: String,
+    #[serde(default)]
+    pub choice_index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoreCompletionMessage {
+    pub id: String,
+    #[serde(default)]
+    pub choice_index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SimpleContent {
     Text(String),
@@ -504,16 +530,16 @@ pub enum SimpleContentPartType {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum UserContent {
+pub enum RichContent {
     Text(String),
-    Parts(Vec<ContentPart>),
+    Parts(Vec<RichContentPart>),
 }
 
-impl UserContent {
+impl RichContent {
     pub fn write_template_content(&self, s: &mut String) {
         match self {
-            UserContent::Text(text) => s.push_str(text),
-            UserContent::Parts(parts) => {
+            RichContent::Text(text) => s.push_str(text),
+            RichContent::Parts(parts) => {
                 parts.iter().for_each(|part| part.write_template_content(s))
             }
         }
@@ -522,21 +548,23 @@ impl UserContent {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
-pub enum ContentPart {
+pub enum RichContentPart {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "image_url")]
     ImageUrl { image_url: ImageUrl },
     #[serde(rename = "input_audio")]
     InputAudio { input_audio: InputAudio },
+    #[serde(rename = "input_video")]
+    InputVideo { video_url: VideoUrl },
     #[serde(rename = "file")]
     File { file: File },
 }
 
-impl ContentPart {
+impl RichContentPart {
     pub fn write_template_content(&self, s: &mut String) {
         match self {
-            ContentPart::Text { text } => s.push_str(text),
+            RichContentPart::Text { text } => s.push_str(text),
             _ => {}
         }
     }
@@ -574,6 +602,11 @@ pub enum InputAudioFormat {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VideoUrl {
+    pub url: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct File {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_data: Option<String>,
@@ -581,47 +614,6 @@ pub struct File {
     pub file_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
-}
-
-// #[derive(Debug, Clone, Serialize, Deserialize)]
-// pub struct AssistantAudio {
-//     pub id: String,
-// }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum AssistantContent {
-    Text(String),
-    Parts(Vec<AssistantContentPart>),
-}
-
-impl AssistantContent {
-    pub fn write_template_content(&self, s: &mut String) {
-        match self {
-            AssistantContent::Text(text) => s.push_str(text),
-            AssistantContent::Parts(parts) => {
-                parts.iter().for_each(|part| part.write_template_content(s))
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type")]
-pub enum AssistantContentPart {
-    #[serde(rename = "text")]
-    Text { text: String },
-    #[serde(rename = "refusal")]
-    Refusal { refusal: String },
-}
-
-impl AssistantContentPart {
-    pub fn write_template_content(&self, s: &mut String) {
-        s.push_str(match self {
-            AssistantContentPart::Text { text } => text,
-            AssistantContentPart::Refusal { refusal } => refusal,
-        })
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

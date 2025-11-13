@@ -16,6 +16,10 @@ pub enum Error {
     Chat(#[from] chat::completions::Error),
     #[error("all votes failed, see choices for further details")]
     AllVotesFailed(Option<u16>),
+    #[error(transparent)]
+    CompletionsArchiveError(error::ResponseError),
+    #[error("invalid choice_index for completion {0}: {1}")]
+    InvalidCompletionChoiceIndex(String, u64),
 }
 
 impl error::StatusError for Error {
@@ -29,6 +33,8 @@ impl error::StatusError for Error {
             Error::Chat(e) => e.status(),
             Error::AllVotesFailed(Some(code)) => *code,
             Error::AllVotesFailed(None) => 500,
+            Error::CompletionsArchiveError(e) => e.status(),
+            Error::InvalidCompletionChoiceIndex(_, _) => 400,
         }
     }
 
@@ -54,6 +60,13 @@ impl error::StatusError for Error {
                 Error::AllVotesFailed(_) => Some(serde_json::json!({
                     "kind": "all_votes_failed",
                     "error": "all votes failed, see choices for further details",
+                })),
+                Error::CompletionsArchiveError(e) => Some(e.message().unwrap_or_else(|| {
+                    serde_json::Value::String("completions archive error".to_string())
+                })),
+                Error::InvalidCompletionChoiceIndex(id, index) => Some(serde_json::json!({
+                    "kind": "invalid_completion_choice_index",
+                    "error": format!("invalid choice_index for completion {}: {}", id, index),
                 })),
             }
         }))

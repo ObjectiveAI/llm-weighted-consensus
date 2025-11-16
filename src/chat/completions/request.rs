@@ -329,6 +329,8 @@ pub enum Message {
     ChatCompletion(ChatCompletionMessage),
     #[serde(rename = "score_completion")]
     ScoreCompletion(ScoreCompletionMessage),
+    #[serde(rename = "multichat_completion")]
+    MultichatCompletion(MultichatCompletionMessage),
 }
 
 impl Message {
@@ -341,6 +343,7 @@ impl Message {
             Message::Tool(msg) => msg.write_template_content(s),
             Message::ChatCompletion(_) => {}
             Message::ScoreCompletion(_) => {}
+            Message::MultichatCompletion(_) => {}
         }
     }
 }
@@ -485,6 +488,15 @@ pub struct ChatCompletionMessage {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreCompletionMessage {
+    pub id: String,
+    #[serde(default)]
+    pub choice_index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultichatCompletionMessage {
     pub id: String,
     #[serde(default)]
     pub choice_index: u64,

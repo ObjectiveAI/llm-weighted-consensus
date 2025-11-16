@@ -1,4 +1,4 @@
-use crate::{chat, error, score};
+use crate::{chat, error, multichat, score};
 
 #[async_trait::async_trait]
 pub trait Fetcher<CTX> {
@@ -16,6 +16,14 @@ pub trait Fetcher<CTX> {
         id: &str,
     ) -> Result<
         score::completions::response::unary::ChatCompletion,
+        error::ResponseError,
+    >;
+    async fn fetch_multichat_completion(
+        &self,
+        ctx: CTX,
+        id: &str,
+    ) -> Result<
+        multichat::completions::response::unary::ChatCompletion,
         error::ResponseError,
     >;
 }
@@ -40,6 +48,16 @@ impl<CTX: Send + Sync + 'static> Fetcher<CTX> for UnimplementedFetcher {
         _id: &str,
     ) -> Result<
         score::completions::response::unary::ChatCompletion,
+        error::ResponseError,
+    > {
+        unimplemented!()
+    }
+    async fn fetch_multichat_completion(
+        &self,
+        _ctx: CTX,
+        _id: &str,
+    ) -> Result<
+        multichat::completions::response::unary::ChatCompletion,
         error::ResponseError,
     > {
         unimplemented!()

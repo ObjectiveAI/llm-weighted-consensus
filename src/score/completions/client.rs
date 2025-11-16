@@ -842,9 +842,23 @@ pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
                     continue;
                 }
                 completions_futs.push(futures::future::Either::Right(
-                    completions_archive_fetcher
-                        .fetch_score_completion(ctx.clone(), id)
-                        .map_ok(completions_archive::Completion::Score),
+                    futures::future::Either::Left(
+                        completions_archive_fetcher
+                            .fetch_score_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Score),
+                    ),
+                ));
+            }
+            super::request::Choice::MultichatCompletion { id, .. } => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    futures::future::Either::Right(
+                        completions_archive_fetcher
+                            .fetch_multichat_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Multichat),
+                    ),
                 ));
             }
             _ => {}
@@ -875,9 +889,28 @@ pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
                     continue;
                 }
                 completions_futs.push(futures::future::Either::Right(
-                    completions_archive_fetcher
-                        .fetch_score_completion(ctx.clone(), id)
-                        .map_ok(completions_archive::Completion::Score),
+                    futures::future::Either::Left(
+                        completions_archive_fetcher
+                            .fetch_score_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Score),
+                    ),
+                ));
+            }
+            chat::completions::request::Message::MultichatCompletion(
+                chat::completions::request::MultichatCompletionMessage {
+                    id,
+                    ..
+                },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    futures::future::Either::Right(
+                        completions_archive_fetcher
+                            .fetch_multichat_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Multichat),
+                    ),
                 ));
             }
             _ => {}
@@ -906,6 +939,7 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
         let id = match &completion {
             completions_archive::Completion::Chat(c) => &c.id,
             completions_archive::Completion::Score(c) => &c.id,
+            completions_archive::Completion::Multichat(c) => &c.id,
         };
         id_to_completion.insert(id.clone(), completion);
     }
@@ -949,6 +983,18 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
                         _ => None,
                     })
             }
+            completions_archive::Completion::Multichat(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .and_then(|choice| match choice.message.content {
+                        Some(ref content) if !content.is_empty() => {
+                            Some(content.clone())
+                        }
+                        _ => None,
+                    })
+            }
         }
         .ok_or(super::Error::InvalidCompletionChoiceIndex(
             id.clone(),
@@ -976,6 +1022,13 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
                     name,
                 },
             ) => (id, *choice_index, name.clone()),
+            chat::completions::request::Message::MultichatCompletion(
+                chat::completions::request::MultichatCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
             _ => continue,
         };
         // return error if the choice_index is invalid
@@ -991,6 +1044,13 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
                     .iter()
                     .find(|choice| choice.index == choice_index)
                     .map(|choice| choice.message.inner.clone())
+            }
+            completions_archive::Completion::Multichat(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .map(|choice| choice.message.clone())
             }
         }
         .ok_or(super::Error::InvalidCompletionChoiceIndex(

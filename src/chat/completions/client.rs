@@ -465,9 +465,25 @@ pub async fn fetch_completion_futs_from_messages<CTX: Clone>(
                     continue;
                 }
                 completions_futs.push(futures::future::Either::Right(
-                    completions_archive_fetcher
-                        .fetch_score_completion(ctx.clone(), id)
-                        .map_ok(completions_archive::Completion::Score),
+                    futures::future::Either::Left(
+                        completions_archive_fetcher
+                            .fetch_score_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Score),
+                    ),
+                ));
+            }
+            super::request::Message::MultichatCompletion(
+                super::request::MultichatCompletionMessage { id, .. },
+            ) => {
+                if !ids.insert(id.as_str()) {
+                    continue;
+                }
+                completions_futs.push(futures::future::Either::Right(
+                    futures::future::Either::Right(
+                        completions_archive_fetcher
+                            .fetch_multichat_completion(ctx.clone(), id)
+                            .map_ok(completions_archive::Completion::Multichat),
+                    ),
                 ));
             }
             _ => {}
@@ -494,6 +510,7 @@ pub fn replace_completion_messages_with_assistant_messages(
         let id = match &completion {
             completions_archive::Completion::Chat(c) => &c.id,
             completions_archive::Completion::Score(c) => &c.id,
+            completions_archive::Completion::Multichat(c) => &c.id,
         };
         id_to_completion.insert(id.clone(), completion);
     }
@@ -515,6 +532,13 @@ pub fn replace_completion_messages_with_assistant_messages(
                     name,
                 },
             ) => (id, *choice_index, name.clone()),
+            super::request::Message::MultichatCompletion(
+                super::request::MultichatCompletionMessage {
+                    id,
+                    choice_index,
+                    name,
+                },
+            ) => (id, *choice_index, name.clone()),
             _ => continue,
         };
         // return error if the choice_index is invalid
@@ -530,6 +554,13 @@ pub fn replace_completion_messages_with_assistant_messages(
                     .iter()
                     .find(|choice| choice.index == choice_index)
                     .map(|choice| choice.message.inner.clone())
+            }
+            completions_archive::Completion::Multichat(ref completion) => {
+                completion
+                    .choices
+                    .iter()
+                    .find(|choice| choice.index == choice_index)
+                    .map(|choice| choice.message.clone())
             }
         }
         .ok_or(super::Error::InvalidCompletionChoiceIndex(

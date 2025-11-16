@@ -81,6 +81,12 @@ pub enum Choice {
         #[serde(default)]
         choice_index: u64,
     },
+    MultichatCompletion {
+        r#type: ChatCompletionChoiceType,
+        id: String,
+        #[serde(default)]
+        choice_index: u64,
+    },
 }
 
 impl Choice {
@@ -89,6 +95,7 @@ impl Choice {
             Choice::Text(_) => "Text",
             Choice::ChatCompletion { .. } => "ChatCompletion",
             Choice::ScoreCompletion { .. } => "ScoreCompletion",
+            Choice::MultichatCompletion { .. } => "MultichatCompletion",
         }
     }
 
@@ -113,4 +120,9 @@ pub enum ChatCompletionChoiceType {
 #[serde(rename_all = "snake_case")]
 pub enum ScoreCompletionChoiceType {
     ScoreCompletion,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum MultichatCompletionChoiceType {
+    MultichatCompletion,
 }

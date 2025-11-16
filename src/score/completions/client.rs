@@ -18,7 +18,7 @@ use std::{
 
 pub fn response_id(created: u64) -> String {
     let uuid = uuid::Uuid::new_v4();
-    format!("rnkcpl-{}-{}", uuid.simple(), created)
+    format!("scrcpl-{}-{}", uuid.simple(), created)
 }
 
 pub struct Client<CTX, CCLIENT, FMODEL, FSTATIC, FTRAININGTABLE, FCOMPLETIONS> {

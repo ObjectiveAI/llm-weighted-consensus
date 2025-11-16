@@ -221,7 +221,9 @@ where
                 if let Some(initial_chunk) = initial_chunk.take() {
                     yield Ok(initial_chunk);
                 }
+                // accumulate all chunks into aggregate
                 aggregate.push(&chunk);
+                // handle usage for each choice
                 for super::response::streaming::Choice {
                     completion_metadata,
                     ..

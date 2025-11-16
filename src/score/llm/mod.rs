@@ -531,20 +531,31 @@ impl LlmBase {
     }
 
     pub fn training_table_id_string(&self) -> Option<String> {
-        if !matches!(self.weight.r#type(), super::WeightType::TrainingTable) {
-            return None;
-        }
+        self.training_table_id_number()
+            .map(|id| format!("{:0>22}", base62::encode(id)))
+    }
+
+    pub fn multichat_id_number(&self) -> u128 {
         let mut clone = self.clone();
         clone.weight = Weight::default();
-        Some(clone.id_string())
+        clone.output_mode = OutputMode::default();
+        clone.synthetic_reasoning = None;
+        clone.top_logprobs = None;
+        clone.id_number()
+    }
+
+    pub fn multichat_id_string(&self) -> String {
+        format!("{:0>22}", base62::encode(self.multichat_id_number()))
     }
 
     pub fn into_llm(
         self,
         id: String,
         training_table_id: Option<String>,
+        multichat_id: String,
         index: usize,
         training_table_index: Option<usize>,
+        multichat_index: usize,
         expect: super::WeightType,
     ) -> Result<Llm, String> {
         self.validate(expect)?;
@@ -552,8 +563,10 @@ impl LlmBase {
             base: self,
             id,
             training_table_id,
+            multichat_id,
             index,
             training_table_index,
+            multichat_index,
         })
     }
 
@@ -564,10 +577,12 @@ impl LlmBase {
         self.validate(self.weight.r#type())?;
         let id = self.id_string();
         let training_table_id = self.training_table_id_string();
+        let multichat_id = self.multichat_id_string();
         Ok(LlmWithoutIndices {
             base: self,
             id,
             training_table_id,
+            multichat_id,
         })
     }
 }
@@ -663,7 +678,7 @@ impl WeightTrainingTable {
             || self.max_weight <= rust_decimal::Decimal::ZERO
         {
             Err(format!(
-                "model must have normal positive base, min, and max weights for training table weights mode: `base_weight={}`, `min_weight={}`, `max_weight={}`",
+                "LLM must have normal positive base, min, and max weights for training table weights mode: `base_weight={}`, `min_weight={}`, `max_weight={}`",
                 self.base_weight, self.min_weight, self.max_weight
             ))
         } else {
@@ -691,6 +706,9 @@ pub struct LlmWithoutIndices {
     // a hash of the LLM configuration
     pub id: String,
 
+    // a hash of the LLM configuration, excluding weight, output_mode, synthetic_reasoning, and top_logprobs
+    pub multichat_id: String,
+
     // a hash of the LLM configuration, excluding weight
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_table_id: Option<String>,
@@ -704,15 +722,21 @@ pub struct Llm {
     // a hash of the LLM configuration
     pub id: String,
 
-    // the index of the LLM in the Ranking Model
+    // the index of the LLM in the Score Model
     pub index: usize,
+
+    // a hash of the LLM configuration, excluding weight, output_mode, synthetic_reasoning, and top_logprobs
+    pub multichat_id: String,
+
+    // the index of the LLM in the MultiChat Model
+    pub multichat_index: usize,
 
     // a hash of the LLM configuration, excluding weight
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_table_id: Option<String>,
 
     // the index of the LLM in the training table
-    // same for every model with the same training_table_id
+    // same for every LLM with the same training_table_id
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_table_index: Option<usize>,
 

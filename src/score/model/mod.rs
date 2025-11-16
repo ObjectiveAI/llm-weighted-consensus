@@ -41,15 +41,25 @@ impl ModelBase {
 
         // convert & validate llms
         let mut llms = Vec::with_capacity(self.llms.len());
+
+        // collect unique training table IDs
         let mut training_table_ids = match self.weight.r#type() {
             super::WeightType::TrainingTable => {
                 Some(Vec::with_capacity(self.llms.len()))
             }
             _ => None,
         };
+
+        // collect all multichat IDs
+        let mut multichat_ids = Vec::with_capacity(self.llms.len());
+
         for llm in self.llms {
+            // compute IDs
             let id = llm.id_string();
             let training_table_id = llm.training_table_id_string();
+            let multichat_id = llm.multichat_id_string();
+
+            // append training table ID, unique oneof each
             if let Some(training_table_ids) = &mut training_table_ids
                 && let Some(training_table_id) = &training_table_id
             {
@@ -59,33 +69,38 @@ impl ModelBase {
                     training_table_ids.push(training_table_id.clone());
                 }
             }
+
+            // append multichat ID
+            multichat_ids.push(multichat_id.clone());
+
+            // append LLM
             llms.push(llm.into_llm(
                 id,
                 training_table_id,
+                multichat_id,
                 0,
                 None,
+                usize::MAX,
                 self.weight.r#type(),
             )?);
         }
 
-        // sort the models by their names
-        // this ensures the same order is always used for the same models
+        // sort by IDs
+        // this ensures the same order is always used for the same LLMs
         llms.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         if let Some(training_table_ids) = &mut training_table_ids {
             training_table_ids.sort_unstable_by(|a, b| a.cmp(b));
         }
+        multichat_ids.sort_unstable_by(|a, b| a.cmp(b));
 
-        // compute IDs and fix indices
-        let mut i = 0;
+        // prepare ID hasher
         let mut hasher = XxHash3_128::with_seed(0);
-        let mut training_table_hasher = if training_table_ids.is_some() {
-            Some(XxHash3_128::with_seed(0))
-        } else {
-            None
-        };
         let weight_json = serde_json::to_string(&self.weight).unwrap();
         hasher.write(weight_json.as_bytes());
-        if let Some(training_table_hasher) = &mut training_table_hasher {
+
+        // prepare training table ID hasher
+        let mut training_table_hasher = if training_table_ids.is_some() {
+            let mut training_table_hasher = XxHash3_128::with_seed(0);
             training_table_hasher.write(
                 serde_json::to_string(
                     &self.weight.weight_training_table().unwrap().embeddings,
@@ -93,16 +108,34 @@ impl ModelBase {
                 .unwrap()
                 .as_bytes(),
             );
-        }
+            Some(training_table_hasher)
+        } else {
+            None
+        };
+        let mut multichat_hasher = XxHash3_128::with_seed(0);
+
+        // iterate over LLMs to:
+        // - set index
+        // - set training_table_index
+        // - hash ID
+        // - hash training table ID
+        let mut i = 0;
         for super::llm::Llm {
             id,
             training_table_id,
+            multichat_id,
             index,
             training_table_index,
+            multichat_index,
             ..
         } in &mut llms
         {
+            // hash ID and set index
             hasher.write(id.as_bytes());
+            *index = i;
+            i += 1;
+
+            // hash training table ID and set training table index
             if let Some(training_table_hasher) = &mut training_table_hasher {
                 let training_table_id = training_table_id.as_deref().unwrap();
                 training_table_hasher.write(training_table_id.as_bytes());
@@ -115,9 +148,30 @@ impl ModelBase {
                         .unwrap(),
                 );
             }
-            *index = i;
-            i += 1;
+
+            // hash multichat ID and set multichat index
+            multichat_hasher.write(multichat_id.as_bytes());
+            *multichat_index = multichat_ids
+                .iter()
+                .position(|n| n == multichat_id)
+                .unwrap();
         }
+
+        // iterate over multichat IDs to hash them and set multichat index for LLMs
+        for (multichat_index, multichat_id) in
+            multichat_ids.into_iter().enumerate()
+        {
+            multichat_hasher.write(multichat_id.as_bytes());
+            for llm in &mut llms {
+                if llm.multichat_id == multichat_id
+                    && llm.multichat_index == usize::MAX
+                {
+                    llm.multichat_index = multichat_index;
+                }
+            }
+        }
+
+        // finalize the IDs
         let id = format!("{:0>22}", base62::encode(hasher.finish_128()));
         let training_table_id = match training_table_hasher {
             Some(hasher) => {
@@ -125,10 +179,13 @@ impl ModelBase {
             }
             None => None,
         };
+        let multichat_id =
+            format!("{:0>22}", base62::encode(multichat_hasher.finish_128()));
 
         // finalize the conversion
         Ok(Model {
             id,
+            multichat_id,
             training_table_id,
             llms,
             weight: self.weight,
@@ -139,6 +196,7 @@ impl ModelBase {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Model {
     pub id: String,
+    pub multichat_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub training_table_id: Option<String>,
     pub llms: Vec<super::llm::Llm>,

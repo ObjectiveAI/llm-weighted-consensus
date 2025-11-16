@@ -221,27 +221,21 @@ where
                 if let Some(initial_chunk) = initial_chunk.take() {
                     yield Ok(initial_chunk);
                 }
-                for super::response::streaming::Choice {
-                    completion_metadata,
-                    ..
-                } in &mut chunk.choices {
-                    if let Some(super::response::CompletionMetadata {
-                        usage: Some(llm_usage),
-                        ..
-                    }) = completion_metadata.as_mut() {
-                        usage.push(llm_usage);
-                    }
-                }
                 aggregate.push(&chunk);
                 for super::response::streaming::Choice {
                     completion_metadata,
                     ..
-                } in &mut chunk.choices {
-                    if let Some(
-                        completion_metadata
-                    ) = completion_metadata.as_mut() {
+                } in &mut chunk.choices
+                {
+                    if let Some(super::response::CompletionMetadata {
+                        usage: llm_usage,
+                        ..
+                    }) = completion_metadata.as_mut() {
+                        // accumulate usage
                         // include usage only in the last chunk
-                        completion_metadata.usage = None;
+                        if let Some(llm_usage) = llm_usage.take() {
+                            usage.push(&llm_usage);
+                        }
                     }
                 }
                 yield Ok(chunk);

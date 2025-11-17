@@ -133,7 +133,7 @@ where
 
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
-        replace_completion_messages_and_completion_choices_with_assistant_messages_and_text_choices(
+        replace_completion_messages_and_completion_choices_with_assistant_messages_and_completion_message_choices(
             completions,
             &mut request.choices,
             &mut request.messages,
@@ -164,16 +164,81 @@ where
             id: response_id.clone(),
             choices: {
                 let mut choices = Vec::with_capacity(request.choices.len() + model.llms.len());
-                for (i, choice_) in request.choices.iter().enumerate() {
+                for (i, request_choice) in request.choices.iter().enumerate() {
                     choices.push(super::response::streaming::Choice {
                         delta: super::response::streaming::Delta {
-                            inner: chat::completions::response::streaming::Delta {
-                                content: Some(choice_.unwrap_text().to_owned()),
-                                refusal: None,
-                                role: Some(chat::completions::response::Role::Assistant),
-                                tool_calls: None,
-                                reasoning: None,
-                                images: None,
+                            inner: match request_choice {
+                                super::request::Choice::Text(text) => {
+                                    chat::completions::response::streaming::Delta {
+                                        content: Some(text.clone()),
+                                        refusal: None,
+                                        role: Some(chat::completions::response::Role::Assistant),
+                                        tool_calls: None,
+                                        reasoning: None,
+                                        images: None,
+                                    }
+                                }
+                                super::request::Choice::ChatCompletionMessage(
+                                    chat::completions::response::unary::Message {
+                                        content,
+                                        refusal,
+                                        role,
+                                        tool_calls,
+                                        reasoning,
+                                        images,
+                                        ..
+                                    }
+                                ) => {
+                                    chat::completions::response::streaming::Delta {
+                                        content: content.clone(),
+                                        refusal: refusal.clone(),
+                                        role: Some(*role),
+                                        tool_calls: tool_calls
+                                            .as_ref()
+                                            .map(|tool_calls| {
+                                                tool_calls
+                                                    .iter()
+                                                    .enumerate()
+                                                    .map(|(index, tool_call)| {
+                                                        let chat::completions::response::unary::ToolCall {
+                                                            id,
+                                                            function: chat::completions::response::unary::ToolCallFunction {
+                                                                name,
+                                                                arguments,
+                                                            },
+                                                            r#type,
+                                                        } = tool_call;
+                                                        chat::completions::response::streaming::ToolCall {
+                                                            index: index as u64,
+                                                            id: Some(id.clone()),
+                                                            function: Some(
+                                                                chat::completions::response::streaming::ToolCallFunction {
+                                                                    name: Some(
+                                                                        name.clone(),
+                                                                    ),
+                                                                    arguments: Some(
+                                                                        arguments.clone(),
+                                                                    ),
+                                                                },
+                                                            ),
+                                                            r#type: Some(*r#type),
+                                                        }
+                                                    })
+                                                    .collect()
+                                            }),
+                                        reasoning: reasoning.clone(),
+                                        images: images.clone(),
+                                    }
+                                }
+                                super::request::Choice::ChatCompletion { .. } => {
+                                    unreachable!()
+                                }
+                                super::request::Choice::ScoreCompletion { .. } => {
+                                    unreachable!()
+                                }
+                                super::request::Choice::MultichatCompletion { .. } => {
+                                    unreachable!()
+                                }
                             },
                             vote: None,
                         },
@@ -198,6 +263,29 @@ where
         };
         let mut initial_chunk = Some(aggregate.clone());
 
+        // convert request choices to serializable strings
+        let request_choices_text = Arc::new(
+            request
+                .choices
+                .iter()
+                .map(|choice| match choice {
+                    super::request::Choice::Text(text) => text.clone(),
+                    super::request::Choice::ChatCompletionMessage(message) => {
+                        convert_completion_message_to_text(message)
+                    }
+                    super::request::Choice::ChatCompletion { .. } => {
+                        unreachable!()
+                    }
+                    super::request::Choice::ScoreCompletion { .. } => {
+                        unreachable!()
+                    }
+                    super::request::Choice::MultichatCompletion { .. } => {
+                        unreachable!()
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
+
         // stream
         let indexer =
             Arc::new(ChoiceIndexer::new(request.choices.len() as u64));
@@ -213,6 +301,7 @@ where
                         llm.clone(),
                         weights[llm.index],
                         request.clone(),
+                        request_choices_text.clone(),
                     )).flat_map(|s| s).boxed()
                 })
             );
@@ -333,6 +422,7 @@ where
         llm: score::llm::Llm,
         weight: rust_decimal::Decimal,
         request: Arc<super::request::ChatCompletionCreateParams>,
+        request_choices_text: Arc<Vec<String>>,
     ) -> impl Stream<Item = super::response::streaming::ChatCompletionChunk>
     + Send
     + Unpin
@@ -342,10 +432,9 @@ where
             seed,
             service_tier,
             tools: readonly_tools,
-            choices,
             ..
         } = &*request;
-        let choices_len = choices.len();
+        let choices_len = request_choices_text.len();
         let mut messages = messages.clone();
         if let Some(mut prefix_messages) = llm.base.prefix_messages {
             prefix_messages.extend(messages);
@@ -371,7 +460,7 @@ where
             let pfx_indices = pfx_tree.pfx_indices(&mut rng, choices_len);
             // serialize choices
             let choices_string = SelectPfxTree::json_serialize_select_choices(
-                &choices,
+                &*request_choices_text,
                 &pfx_indices,
             );
             (pfx_tree, pfx_indices, choices_string)
@@ -920,7 +1009,7 @@ pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
 }
 
 // long name but you know what it does
-pub fn replace_completion_messages_and_completion_choices_with_assistant_messages_and_text_choices(
+pub fn replace_completion_messages_and_completion_choices_with_assistant_messages_and_completion_message_choices(
     completions: Vec<completions_archive::Completion>,
     choices: &mut Vec<super::request::Choice>,
     messages: &mut Vec<chat::completions::request::Message>,
@@ -954,42 +1043,25 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
             _ => continue,
         };
         // return error if the choice_index is invalid
-        let completion_choice_message_content = match id_to_completion
-            [id.as_str()]
-        {
+        let completion_choice_message = match id_to_completion[id.as_str()] {
             completions_archive::Completion::Chat(ref completion) => completion
                 .choices
                 .iter()
                 .find(|choice| choice.index == choice_index)
-                .and_then(|choice| match choice.message.content {
-                    Some(ref content) if !content.is_empty() => {
-                        Some(content.clone())
-                    }
-                    _ => None,
-                }),
+                .map(|choice| choice.message.clone()),
             completions_archive::Completion::Score(ref completion) => {
                 completion
                     .choices
                     .iter()
                     .find(|choice| choice.index == choice_index)
-                    .and_then(|choice| match choice.message.inner.content {
-                        Some(ref content) if !content.is_empty() => {
-                            Some(content.clone())
-                        }
-                        _ => None,
-                    })
+                    .map(|choice| choice.message.inner.clone())
             }
             completions_archive::Completion::Multichat(ref completion) => {
                 completion
                     .choices
                     .iter()
                     .find(|choice| choice.index == choice_index)
-                    .and_then(|choice| match choice.message.content {
-                        Some(ref content) if !content.is_empty() => {
-                            Some(content.clone())
-                        }
-                        _ => None,
-                    })
+                    .map(|choice| choice.message.clone())
             }
         }
         .ok_or(super::Error::InvalidCompletionChoiceIndex(
@@ -997,8 +1069,9 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
             choice_index,
         ))?;
         // replace the completion choice with a text choice
-        *choice =
-            super::request::Choice::Text(completion_choice_message_content);
+        *choice = super::request::Choice::ChatCompletionMessage(
+            completion_choice_message,
+        );
     }
 
     // replace completion messages with assistant message
@@ -1063,6 +1136,75 @@ pub fn replace_completion_messages_and_completion_choices_with_assistant_message
     }
 
     Ok(())
+}
+
+fn convert_completion_message_to_text(
+    message: &chat::completions::response::unary::Message,
+) -> String {
+    #[derive(serde::Serialize)]
+    struct SerializableToolCall<'tc> {
+        r#type: SerializableToolCallType,
+        name: &'tc str,
+        arguments: serde_json::Value,
+    }
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "snake_case")]
+    enum SerializableToolCallType {
+        ToolCall,
+    }
+    let tool_calls_text = if let Some(tool_calls) = &message.tool_calls
+        && !tool_calls.is_empty()
+    {
+        let serializable_tool_calls = tool_calls
+            .iter()
+            .map(|tool_call| SerializableToolCall {
+                r#type: SerializableToolCallType::ToolCall,
+                name: &tool_call.function.name,
+                arguments: match serde_json::from_str::<serde_json::Value>(
+                    &tool_call.function.arguments,
+                ) {
+                    Ok(args) => args,
+                    Err(_) => serde_json::Value::String(
+                        tool_call.function.arguments.clone(),
+                    ),
+                },
+            })
+            .collect::<Vec<_>>();
+        serde_json::to_string_pretty(&serializable_tool_calls).ok()
+    } else {
+        None
+    };
+    let mut text = String::with_capacity(
+        message.reasoning.as_ref().map(String::len).unwrap_or(0)
+            + message.content.as_ref().map(String::len).unwrap_or(0)
+            + message.refusal.as_ref().map(String::len).unwrap_or(0)
+            + tool_calls_text.as_ref().map(String::len).unwrap_or(0),
+    );
+    if let Some(reasoning) = &message.reasoning {
+        text.push_str(reasoning);
+    }
+    if let Some(content) = &message.content {
+        if !text.is_empty() {
+            text.push('\n');
+            text.push('\n');
+        }
+        text.push_str(content);
+    }
+    if let Some(refusal) = &message.refusal {
+        if !text.is_empty() {
+            text.push('\n');
+            text.push('\n');
+        }
+        text.push_str(refusal);
+    }
+    if let Some(tool_calls_text) = tool_calls_text {
+        if !text.is_empty() {
+            text.push('\n');
+            text.push('\n');
+        }
+        text.push_str(&tool_calls_text);
+    }
+    text
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -1332,15 +1474,6 @@ impl SelectPfxTree {
         }
     }
 
-    // fn is_leaf_branch(&self) -> bool {
-    //     match self {
-    //         SelectPfxTree::Branch(branch) => branch
-    //             .values()
-    //             .any(|v| matches!(v, SelectPfxTree::Leaf { .. })),
-    //         SelectPfxTree::Leaf(_) => false,
-    //     }
-    // }
-
     fn depth(&self) -> usize {
         match self {
             SelectPfxTree::Branch(branch) => {
@@ -1354,13 +1487,6 @@ impl SelectPfxTree {
         }
     }
 
-    // fn unwrap_branch(self) -> Arc<IndexMap<SelectPfx, SelectPfxTree>> {
-    //     match self {
-    //         SelectPfxTree::Branch(branch) => branch,
-    //         SelectPfxTree::Leaf(_) => panic!("Called unwrap_branch on a Leaf"),
-    //     }
-    // }
-
     fn unwrap_leaf(&self) -> usize {
         match self {
             SelectPfxTree::Leaf(index) => *index,
@@ -1371,12 +1497,12 @@ impl SelectPfxTree {
     }
 
     fn json_serialize_select_choices(
-        choices: &[super::request::Choice], // guaranteed all text
+        choices: &[String],
         indices: &[(String, usize)],
     ) -> String {
         struct OrderedChoices<'a> {
             indices: &'a [(String, usize)],
-            choices: &'a [super::request::Choice],
+            choices: &'a [String],
         }
         impl<'a> serde::Serialize for OrderedChoices<'a> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

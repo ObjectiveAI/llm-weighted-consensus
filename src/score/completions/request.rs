@@ -69,6 +69,7 @@ impl Model {
 #[serde(untagged)]
 pub enum Choice {
     Text(String),
+    ChatCompletionMessage(chat::completions::response::unary::Message),
     ChatCompletion {
         r#type: ChatCompletionChoiceType,
         id: String,
@@ -87,27 +88,6 @@ pub enum Choice {
         #[serde(default)]
         choice_index: u64,
     },
-}
-
-impl Choice {
-    const fn kind_str(&self) -> &'static str {
-        match self {
-            Choice::Text(_) => "Text",
-            Choice::ChatCompletion { .. } => "ChatCompletion",
-            Choice::ScoreCompletion { .. } => "ScoreCompletion",
-            Choice::MultichatCompletion { .. } => "MultichatCompletion",
-        }
-    }
-
-    pub fn unwrap_text(&self) -> &str {
-        match self {
-            Choice::Text(text) => text,
-            _ => panic!(
-                "called `Choice::unwrap_text` on a `{}` value",
-                self.kind_str()
-            ),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

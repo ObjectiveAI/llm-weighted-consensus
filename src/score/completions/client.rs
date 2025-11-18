@@ -146,6 +146,28 @@ where
             request_choices_len,
             request.choices.drain(..),
         )?;
+        request.choices = internal_choices
+            .iter()
+            .map(|choice| match choice {
+                super::request::InternalChoice::Text(text) => text.clone(),
+                super::request::InternalChoice::ChatCompletionChoiceMessage(message) => {
+                    convert_completion_message_to_text(message)
+                }
+                super::request::InternalChoice::ChatCompletionChoice {
+                    choice,
+                    ..
+                } => {
+                    convert_completion_message_to_text(&choice.message)
+                }
+                super::request::InternalChoice::ScoreCompletionChoice(choice) => {
+                    convert_completion_message_to_text(&choice.message.inner)
+                }
+                super::request::InternalChoice::MultichatCompletionChoice(choice) => {
+                    convert_completion_message_to_text(&choice.message)
+                }
+            })
+            .map(super::request::Choice::Text)
+            .collect::<Vec<_>>();
 
         // wrap finalized request in Arc
         let request = Arc::new(request);
@@ -156,31 +178,6 @@ where
             .fetch(ctx.clone(), request.clone(), model.clone())
             .await
             .map_err(|e| super::Error::FetchModelWeights(e))?;
-
-        // convert request choices to serializable strings
-        let request_choices_text = Arc::new(
-            internal_choices
-                .iter()
-                .map(|choice| match choice {
-                    super::request::InternalChoice::Text(text) => text.clone(),
-                    super::request::InternalChoice::ChatCompletionChoiceMessage(message) => {
-                        convert_completion_message_to_text(message)
-                    }
-                    super::request::InternalChoice::ChatCompletionChoice {
-                        choice,
-                        ..
-                    } => {
-                        convert_completion_message_to_text(&choice.message)
-                    }
-                    super::request::InternalChoice::ScoreCompletionChoice(choice) => {
-                        convert_completion_message_to_text(&choice.message.inner)
-                    }
-                    super::request::InternalChoice::MultichatCompletionChoice(choice) => {
-                        convert_completion_message_to_text(&choice.message)
-                    }
-                })
-                .collect::<Vec<_>>(),
-        );
 
         // create the first chunk, containing the provided choices
         let mut aggregate = super::response::streaming::ChatCompletionChunk {
@@ -354,7 +351,6 @@ where
                         llm.clone(),
                         weights[llm.index],
                         request.clone(),
-                        request_choices_text.clone(),
                     )).flat_map(|s| s).boxed()
                 })
             );
@@ -475,7 +471,6 @@ where
         llm: score::llm::Llm,
         weight: rust_decimal::Decimal,
         request: Arc<super::request::ChatCompletionCreateParams>,
-        request_choices_text: Arc<Vec<String>>,
     ) -> impl Stream<Item = super::response::streaming::ChatCompletionChunk>
     + Send
     + Unpin
@@ -487,7 +482,7 @@ where
             tools: readonly_tools,
             ..
         } = &*request;
-        let choices_len = request_choices_text.len();
+        let request_choices_len = request.choices.len();
         let mut messages = messages.clone();
         if let Some(mut prefix_messages) = llm.base.prefix_messages {
             prefix_messages.extend(messages);
@@ -503,17 +498,17 @@ where
             // create the prefixes
             let pfx_tree = SelectPfxTree::new(
                 &mut rng,
-                choices_len,
+                request_choices_len,
                 match llm.base.top_logprobs {
                     Some(top_logprobs) => top_logprobs as usize,
                     None => 20,
                 },
             );
             // map prefix to choice index
-            let pfx_indices = pfx_tree.pfx_indices(&mut rng, choices_len);
+            let pfx_indices = pfx_tree.pfx_indices(&mut rng, request_choices_len);
             // serialize choices
             let choices_string = SelectPfxTree::json_serialize_select_choices(
-                &*request_choices_text,
+                &request.choices,
                 &pfx_indices,
             );
             (pfx_tree, pfx_indices, choices_string)
@@ -894,7 +889,7 @@ where
                     pfx_tree.clone(),
                     &choices_key_pattern,
                     &choices_key_pattern_stripped,
-                    choices_len,
+                    request_choices_len,
                     aggregate_choice,
                 ) {
                     Ok(vote) => choice.delta.vote = Some(vote),
@@ -1581,12 +1576,12 @@ impl SelectPfxTree {
     }
 
     fn json_serialize_select_choices(
-        choices: &[String],
+        choices: &[super::request::Choice],
         indices: &[(String, usize)],
     ) -> String {
         struct OrderedChoices<'a> {
             indices: &'a [(String, usize)],
-            choices: &'a [String],
+            choices: &'a [super::request::Choice],
         }
         impl<'a> serde::Serialize for OrderedChoices<'a> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>

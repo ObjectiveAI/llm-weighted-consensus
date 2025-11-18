@@ -1,6 +1,9 @@
 use super::weight;
 use crate::{
-    chat, completions_archive, score,
+    chat::{
+        self, completions::replace_completion_messages_with_assistant_messages,
+    },
+    completions_archive, score,
     util::{ChoiceIndexer, StreamOnce},
 };
 use futures::{Stream, StreamExt, TryFutureExt, TryStreamExt};
@@ -109,9 +112,10 @@ where
         let response_id = response_id(created);
 
         // validate choice count
-        if request.choices.len() < 2 {
+        let request_choices_len = request.choices.len();
+        if request_choices_len < 2 {
             return Err(super::Error::ExpectedTwoOrMoreChoices(
-                request.choices.len(),
+                request_choices_len,
             ));
         }
 
@@ -133,10 +137,14 @@ where
 
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
-        replace_completion_messages_and_completion_choices_with_assistant_messages_and_completion_message_choices(
-            completions,
-            &mut request.choices,
+        replace_completion_messages_with_assistant_messages(
+            &completions,
             &mut request.messages,
+        )?;
+        let internal_choices = convert_choices_to_internal_choices(
+            &completions,
+            request_choices_len,
+            request.choices.drain(..),
         )?;
 
         // wrap finalized request in Arc
@@ -149,109 +157,167 @@ where
             .await
             .map_err(|e| super::Error::FetchModelWeights(e))?;
 
-        // track usage
-        let mut usage: chat::completions::response::Usage = match &weight_data {
-            super::weight::Data::TrainingTable(ttd) => {
-                ttd.embeddings_response.usage.clone().unwrap_or_default()
-            }
-            super::weight::Data::Static(_) => {
-                chat::completions::response::Usage::default()
-            }
-        };
+        // convert request choices to serializable strings
+        let request_choices_text = Arc::new(
+            internal_choices
+                .iter()
+                .map(|choice| match choice {
+                    super::request::InternalChoice::Text(text) => text.clone(),
+                    super::request::InternalChoice::ChatCompletionChoiceMessage(message) => {
+                        convert_completion_message_to_text(message)
+                    }
+                    super::request::InternalChoice::ChatCompletionChoice {
+                        choice,
+                        ..
+                    } => {
+                        convert_completion_message_to_text(&choice.message)
+                    }
+                    super::request::InternalChoice::ScoreCompletionChoice(choice) => {
+                        convert_completion_message_to_text(&choice.message.inner)
+                    }
+                    super::request::InternalChoice::MultichatCompletionChoice(choice) => {
+                        convert_completion_message_to_text(&choice.message)
+                    }
+                })
+                .collect::<Vec<_>>(),
+        );
 
         // create the first chunk, containing the provided choices
         let mut aggregate = super::response::streaming::ChatCompletionChunk {
             id: response_id.clone(),
             choices: {
-                let mut choices = Vec::with_capacity(request.choices.len() + model.llms.len());
-                for (i, request_choice) in request.choices.iter().enumerate() {
-                    choices.push(super::response::streaming::Choice {
-                        delta: super::response::streaming::Delta {
-                            inner: match request_choice {
-                                super::request::Choice::Text(text) => {
-                                    chat::completions::response::streaming::Delta {
-                                        content: Some(text.clone()),
-                                        refusal: None,
-                                        role: Some(chat::completions::response::Role::Assistant),
-                                        tool_calls: None,
-                                        reasoning: None,
-                                        images: None,
-                                    }
+                let mut choices = Vec::with_capacity(internal_choices.len() + model.llms.len());
+                for (i, request_choice) in internal_choices.into_iter().enumerate() {
+                    choices.push(
+                        match request_choice {
+                            super::request::InternalChoice::Text(text) => {
+                                super::response::streaming::Choice {
+                                    delta: super::response::streaming::Delta {
+                                        inner: chat::completions::response::streaming::Delta {
+                                            content: Some(text),
+                                            refusal: None,
+                                            role: Some(
+                                                chat::completions::response::Role::Assistant,
+                                            ),
+                                            tool_calls: None,
+                                            reasoning: None,
+                                            images: None,
+                                        },
+                                        vote: None,
+                                    },
+                                    finish_reason: Some(
+                                        chat::completions::response::FinishReason::Stop,
+                                    ),
+                                    index: i as u64,
+                                    logprobs: None,
+                                    weight: None,
+                                    confidence: None,
+                                    error: None,
+                                    model: None,
+                                    model_index: None,
+                                    completion_metadata: None,
                                 }
-                                super::request::Choice::ChatCompletionMessage(
-                                    chat::completions::response::unary::Message {
-                                        content,
-                                        refusal,
-                                        role,
-                                        tool_calls,
-                                        reasoning,
-                                        images,
-                                        ..
-                                    }
-                                ) => {
-                                    chat::completions::response::streaming::Delta {
-                                        content: content.clone(),
-                                        refusal: refusal.clone(),
-                                        role: Some(*role),
-                                        tool_calls: tool_calls
-                                            .as_ref()
-                                            .map(|tool_calls| {
-                                                tool_calls
-                                                    .iter()
-                                                    .enumerate()
-                                                    .map(|(index, tool_call)| {
-                                                        let chat::completions::response::unary::ToolCall {
-                                                            id,
-                                                            function: chat::completions::response::unary::ToolCallFunction {
-                                                                name,
-                                                                arguments,
-                                                            },
-                                                            r#type,
-                                                        } = tool_call;
-                                                        chat::completions::response::streaming::ToolCall {
-                                                            index: index as u64,
-                                                            id: Some(id.clone()),
-                                                            function: Some(
-                                                                chat::completions::response::streaming::ToolCallFunction {
-                                                                    name: Some(
-                                                                        name.clone(),
-                                                                    ),
-                                                                    arguments: Some(
-                                                                        arguments.clone(),
-                                                                    ),
-                                                                },
-                                                            ),
-                                                            r#type: Some(*r#type),
-                                                        }
-                                                    })
-                                                    .collect()
-                                            }),
-                                        reasoning: reasoning.clone(),
-                                        images: images.clone(),
-                                    }
+                            }
+                            super::request::InternalChoice::ChatCompletionChoiceMessage(message) => {
+                                super::response::streaming::Choice {
+                                    delta: convert_chat_completion_choice_message_to_delta(
+                                        message,
+                                    ),
+                                    finish_reason: Some(
+                                        chat::completions::response::FinishReason::Stop,
+                                    ),
+                                    index: i as u64,
+                                    logprobs: None,
+                                    weight: None,
+                                    confidence: None,
+                                    error: None,
+                                    model: None,
+                                    model_index: None,
+                                    completion_metadata: None,
                                 }
-                                super::request::Choice::ChatCompletion { .. } => {
-                                    unreachable!()
+                            }
+                            super::request::InternalChoice::ChatCompletionChoice {
+                                completion_id,
+                                completion_created,
+                                completion_model,
+                                completion_service_tier,
+                                completion_system_fingerprint,
+                                completion_provider,
+                                choice,
+                            } => {
+                                super::response::streaming::Choice {
+                                    delta: convert_chat_completion_choice_message_to_delta(
+                                        choice.message,
+                                    ),
+                                    finish_reason: Some(
+                                        chat::completions::response::FinishReason::Stop,
+                                    ),
+                                    index: i as u64,
+                                    logprobs: choice.logprobs,
+                                    weight: None,
+                                    confidence: None,
+                                    error: None,
+                                    model: None,
+                                    model_index: None,
+                                    completion_metadata: Some(
+                                        super::response::CompletionMetadata {
+                                            id: completion_id,
+                                            created: completion_created,
+                                            model: completion_model,
+                                            service_tier: 
+                                            completion_service_tier,
+                                            system_fingerprint:
+                                                completion_system_fingerprint,
+                                            usage: None,
+                                            provider: completion_provider,
+                                        },
+                                    ),
                                 }
-                                super::request::Choice::ScoreCompletion { .. } => {
-                                    unreachable!()
+                            }
+                            super::request::InternalChoice::ScoreCompletionChoice(choice) => {
+                                super::response::streaming::Choice {
+                                    delta: convert_chat_completion_choice_message_to_delta(
+                                        choice.message.inner,
+                                    ),
+                                    finish_reason: Some(chat::completions::response::FinishReason::Stop),
+                                    index: i as u64,
+                                    logprobs: choice.logprobs,
+                                    weight: None,
+                                    confidence: None,
+                                    error: choice.error,
+                                    model: choice.model,
+                                    model_index: None,
+                                    completion_metadata: 
+                                        choice.completion_metadata.map(|mut m| {
+                                            m.usage = None;
+                                            m
+                                        }),
                                 }
-                                super::request::Choice::MultichatCompletion { .. } => {
-                                    unreachable!()
+                            }
+                            super::request::InternalChoice::MultichatCompletionChoice(choice) => {
+                                super::response::streaming::Choice {
+                                    delta: convert_chat_completion_choice_message_to_delta(
+                                        choice.message,
+                                    ),
+                                    finish_reason: Some(
+                                        chat::completions::response::FinishReason::Stop,
+                                    ),
+                                    index: i as u64,
+                                    logprobs: choice.logprobs,
+                                    weight: None,
+                                    confidence: None,
+                                    error: choice.error,
+                                    model: choice.model,
+                                    model_index: None,
+                                    completion_metadata:
+                                        choice.completion_metadata.map(|mut m| {
+                                            m.usage = None;
+                                            m
+                                        }),
                                 }
-                            },
-                            vote: None,
-                        },
-                        finish_reason: Some(chat::completions::response::FinishReason::Stop),
-                        index: i as u64,
-                        logprobs: None,
-                        weight: None,
-                        confidence: None,
-                        error: None,
-                        model: None,
-                        model_index: None,
-                        completion_metadata: None,
-                    });
+                            }
+                        }
+                    );
                 }
                 choices
             },
@@ -263,32 +329,19 @@ where
         };
         let mut initial_chunk = Some(aggregate.clone());
 
-        // convert request choices to serializable strings
-        let request_choices_text = Arc::new(
-            request
-                .choices
-                .iter()
-                .map(|choice| match choice {
-                    super::request::Choice::Text(text) => text.clone(),
-                    super::request::Choice::ChatCompletionMessage(message) => {
-                        convert_completion_message_to_text(message)
-                    }
-                    super::request::Choice::ChatCompletion { .. } => {
-                        unreachable!()
-                    }
-                    super::request::Choice::ScoreCompletion { .. } => {
-                        unreachable!()
-                    }
-                    super::request::Choice::MultichatCompletion { .. } => {
-                        unreachable!()
-                    }
-                })
-                .collect::<Vec<_>>(),
-        );
+        // track usage
+        let mut usage: chat::completions::response::Usage = match &weight_data {
+            super::weight::Data::TrainingTable(ttd) => {
+                ttd.embeddings_response.usage.clone().unwrap_or_default()
+            }
+            super::weight::Data::Static(_) => {
+                chat::completions::response::Usage::default()
+            }
+        };
 
         // stream
         let indexer =
-            Arc::new(ChoiceIndexer::new(request.choices.len() as u64));
+            Arc::new(ChoiceIndexer::new(request_choices_len as u64));
         Ok(async_stream::stream! {
             let mut vote_stream = futures::stream::select_all(model.llms
                 .iter()
@@ -333,10 +386,10 @@ where
             }
 
             // tally all votes and check for all-error
-            let mut choice_weight = vec![rust_decimal::Decimal::ZERO; request.choices.len()];
+            let mut choice_weight = vec![rust_decimal::Decimal::ZERO; request_choices_len];
             let mut all_choices_error = true;
             let mut all_choices_error_code = None;
-            for choice in aggregate.choices.iter().skip(request.choices.len()) {
+            for choice in aggregate.choices.iter().skip(request_choices_len) {
                 if all_choices_error {
                     match (&choice.error, all_choices_error_code) {
                         (None, _) => {
@@ -377,7 +430,7 @@ where
             usage.with_total_cost();
             aggregate.usage = Some(usage);
             for choice in &mut aggregate.choices {
-                if choice.index < request.choices.len() as u64 {
+                if choice.index < request_choices_len as u64 {
                     let confidence = if choice_weight_sum > rust_decimal::Decimal::ZERO {
                         choice_weight[choice.index as usize] / choice_weight_sum
                     } else {
@@ -906,7 +959,10 @@ pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
     ctx: CTX,
     choices: &[super::request::Choice],
     messages: &[chat::completions::request::Message],
-) -> Result<Vec<completions_archive::Completion>, crate::error::ResponseError> {
+) -> Result<
+    HashMap<String, completions_archive::Completion>,
+    crate::error::ResponseError,
+> {
     // first, create a future for each unique completion in choices and messages
     let mut completions_futs = Vec::new();
     let mut ids = HashSet::new();
@@ -1002,140 +1058,168 @@ pub async fn fetch_completion_futs_from_choices_and_messages<CTX: Clone>(
         }
     }
     if completions_futs.is_empty() {
-        Ok(Vec::new())
+        Ok(HashMap::new())
     } else {
-        futures::future::try_join_all(completions_futs).await
+        let completions =
+            futures::future::try_join_all(completions_futs).await?;
+
+        // map from id to completion
+        let mut id_to_completion = HashMap::with_capacity(completions.len());
+        for completion in completions {
+            let id = match &completion {
+                completions_archive::Completion::Chat(c) => &c.id,
+                completions_archive::Completion::Score(c) => &c.id,
+                completions_archive::Completion::Multichat(c) => &c.id,
+            };
+            id_to_completion.insert(id.clone(), completion);
+        }
+
+        Ok(id_to_completion)
     }
 }
 
-// long name but you know what it does
-pub fn replace_completion_messages_and_completion_choices_with_assistant_messages_and_completion_message_choices(
-    completions: Vec<completions_archive::Completion>,
-    choices: &mut Vec<super::request::Choice>,
-    messages: &mut Vec<chat::completions::request::Message>,
-) -> Result<(), super::Error> {
-    if completions.len() == 0 {
-        return Ok(());
-    }
-
-    // map from id to completion
-    let mut id_to_completion = HashMap::with_capacity(completions.len());
-    for completion in completions {
-        let id = match &completion {
-            completions_archive::Completion::Chat(c) => &c.id,
-            completions_archive::Completion::Score(c) => &c.id,
-            completions_archive::Completion::Multichat(c) => &c.id,
-        };
-        id_to_completion.insert(id.clone(), completion);
-    }
-
-    // replace completion choices with text choices
+pub fn convert_choices_to_internal_choices(
+    completions: &HashMap<String, completions_archive::Completion>,
+    choices_len: usize,
+    choices: impl Iterator<Item = super::request::Choice>,
+) -> Result<Vec<super::request::InternalChoice>, super::Error> {
+    let mut internal_choices = Vec::with_capacity(choices_len);
     for choice in choices {
-        let (id, choice_index) = match choice {
-            super::request::Choice::ChatCompletion {
-                id, choice_index, ..
-            } => (id, *choice_index),
-            super::request::Choice::ScoreCompletion {
+        internal_choices.push(
+            match choice {
+                super::request::Choice::Text(text) => {
+                    super::request::InternalChoice::Text(text)
+                }
+                super::request::Choice::ChatCompletionChoiceMessage(message) => {
+                    super::request::InternalChoice::ChatCompletionChoiceMessage(
+                        message,
+                    )
+                }
+                other => {
+                    let (id, choice_index) = match &other {
+                        super::request::Choice::ChatCompletion {
+                            id,
+                            choice_index,
+                            ..
+                        }
+                        | super::request::Choice::ScoreCompletion {
+                            id,
+                            choice_index,
+                            ..
+                        }
+                        | super::request::Choice::MultichatCompletion {
+                            id,
+                            choice_index,
+                            ..
+                        } => (id, *choice_index),
+                        _ => unreachable!(),
+                    };
+                    match &completions[id.as_str()] {
+                        completions_archive::Completion::Chat(completion) => {
+                            completion
+                                .choices
+                                .iter()
+                                .find(|choice| choice.index == choice_index)
+                                .cloned()
+                                .map(|choice| {
+                                    super::request::InternalChoice::ChatCompletionChoice {
+                                        completion_id: completion.id.clone(),
+                                        completion_created: completion.created,
+                                        completion_model: completion.model.clone(),
+                                        completion_service_tier: completion
+                                            .service_tier
+                                            .clone(),
+                                        completion_system_fingerprint: completion
+                                            .system_fingerprint
+                                            .clone(),
+                                        completion_provider: completion.provider.clone(),
+                                        choice,
+                                    }
+                                })
+                        }
+                        completions_archive::Completion::Score(completion) => {
+                            completion
+                                .choices
+                                .iter()
+                                .find(|choice| choice.index == choice_index)
+                                .cloned()
+                                .map(super::request::InternalChoice::ScoreCompletionChoice)
+                        }
+                        completions_archive::Completion::Multichat(completion) => {
+                            completion
+                                .choices
+                                .iter()
+                                .find(|choice| choice.index == choice_index)
+                                .cloned()
+                                .map(super::request::InternalChoice::MultichatCompletionChoice)
+                        }
+                    }
+                    .ok_or(super::Error::InvalidCompletionChoiceIndex(
+                        id.clone(),
+                        choice_index,
+                    ))?
+                }
+            }
+        );
+    }
+    Ok(internal_choices)
+}
+
+fn convert_message_tool_calls_to_delta_tool_calls(
+    tool_calls: Vec<chat::completions::response::unary::ToolCall>,
+) -> Vec<chat::completions::response::streaming::ToolCall> {
+    tool_calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, tool_call)| {
+            let chat::completions::response::unary::ToolCall {
                 id,
-                choice_index,
-                ..
-            } => (id, *choice_index),
-            _ => continue,
-        };
-        // return error if the choice_index is invalid
-        let completion_choice_message = match id_to_completion[id.as_str()] {
-            completions_archive::Completion::Chat(ref completion) => completion
-                .choices
-                .iter()
-                .find(|choice| choice.index == choice_index)
-                .map(|choice| choice.message.clone()),
-            completions_archive::Completion::Score(ref completion) => {
-                completion
-                    .choices
-                    .iter()
-                    .find(|choice| choice.index == choice_index)
-                    .map(|choice| choice.message.inner.clone())
+                function:
+                    chat::completions::response::unary::ToolCallFunction {
+                        name,
+                        arguments,
+                    },
+                r#type,
+            } = tool_call;
+            chat::completions::response::streaming::ToolCall {
+                index: index as u64,
+                id: Some(id),
+                function: Some(
+                    chat::completions::response::streaming::ToolCallFunction {
+                        name: Some(name),
+                        arguments: Some(arguments),
+                    },
+                ),
+                r#type: Some(r#type),
             }
-            completions_archive::Completion::Multichat(ref completion) => {
-                completion
-                    .choices
-                    .iter()
-                    .find(|choice| choice.index == choice_index)
-                    .map(|choice| choice.message.clone())
-            }
-        }
-        .ok_or(super::Error::InvalidCompletionChoiceIndex(
-            id.clone(),
-            choice_index,
-        ))?;
-        // replace the completion choice with a text choice
-        *choice = super::request::Choice::ChatCompletionMessage(
-            completion_choice_message,
-        );
-    }
+        })
+        .collect()
+}
 
-    // replace completion messages with assistant message
-    for message in messages {
-        let (id, choice_index, name) = match message {
-            chat::completions::request::Message::ChatCompletion(
-                chat::completions::request::ChatCompletionMessage {
-                    id,
-                    choice_index,
-                    name,
-                },
-            ) => (id, *choice_index, name.clone()),
-            chat::completions::request::Message::ScoreCompletion(
-                chat::completions::request::ScoreCompletionMessage {
-                    id,
-                    choice_index,
-                    name,
-                },
-            ) => (id, *choice_index, name.clone()),
-            chat::completions::request::Message::MultichatCompletion(
-                chat::completions::request::MultichatCompletionMessage {
-                    id,
-                    choice_index,
-                    name,
-                },
-            ) => (id, *choice_index, name.clone()),
-            _ => continue,
-        };
-        // return error if the choice_index is invalid
-        let completion_choice_message = match id_to_completion[id.as_str()] {
-            completions_archive::Completion::Chat(ref completion) => completion
-                .choices
-                .iter()
-                .find(|choice| choice.index == choice_index)
-                .map(|choice| choice.message.clone()),
-            completions_archive::Completion::Score(ref completion) => {
-                completion
-                    .choices
-                    .iter()
-                    .find(|choice| choice.index == choice_index)
-                    .map(|choice| choice.message.inner.clone())
-            }
-            completions_archive::Completion::Multichat(ref completion) => {
-                completion
-                    .choices
-                    .iter()
-                    .find(|choice| choice.index == choice_index)
-                    .map(|choice| choice.message.clone())
-            }
-        }
-        .ok_or(super::Error::InvalidCompletionChoiceIndex(
-            id.clone(),
-            choice_index,
-        ))?;
-        // replace the completion message with an assistant message
-        *message = chat::completions::request::Message::Assistant(
-            chat::completions::convert_completion_choice_message_to_assistant_message(
-                completion_choice_message,
-                name,
-            ),
-        );
+fn convert_chat_completion_choice_message_to_delta(
+    chat::completions::response::unary::Message {
+        content,
+        refusal,
+        role,
+        tool_calls,
+        reasoning,
+        images,
+        ..
+    }: chat::completions::response::unary::Message,
+) -> super::response::streaming::Delta {
+    super::response::streaming::Delta {
+        inner: chat::completions::response::streaming::Delta {
+            content,
+            refusal,
+            role: Some(role),
+            tool_calls: tool_calls.map(|tool_calls| {
+                convert_message_tool_calls_to_delta_tool_calls(tool_calls)
+            }),
+            reasoning,
+            images,
+        },
+        vote: None,
     }
-
-    Ok(())
 }
 
 fn convert_completion_message_to_text(

@@ -1,4 +1,4 @@
-use crate::{chat, score};
+use crate::{chat, multichat, score};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +69,7 @@ impl Model {
 #[serde(untagged)]
 pub enum Choice {
     Text(String),
-    ChatCompletionMessage(chat::completions::response::unary::Message),
+    ChatCompletionChoiceMessage(chat::completions::response::unary::Message),
     ChatCompletion {
         r#type: ChatCompletionChoiceType,
         id: String,
@@ -83,11 +83,30 @@ pub enum Choice {
         choice_index: u64,
     },
     MultichatCompletion {
-        r#type: ChatCompletionChoiceType,
+        r#type: MultichatCompletionChoiceType,
         id: String,
         #[serde(default)]
         choice_index: u64,
     },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum InternalChoice {
+    Text(String),
+    ChatCompletionChoiceMessage(chat::completions::response::unary::Message),
+    ChatCompletionChoice {
+        completion_id: String,
+        completion_created: u64,
+        completion_model: String,
+        completion_service_tier:
+            Option<chat::completions::response::ServiceTier>,
+        completion_system_fingerprint: Option<String>,
+        completion_provider: Option<String>,
+        choice: chat::completions::response::unary::Choice,
+    },
+    ScoreCompletionChoice(score::completions::response::unary::Choice),
+    MultichatCompletionChoice(multichat::completions::response::unary::Choice),
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -103,6 +122,7 @@ pub enum ScoreCompletionChoiceType {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MultichatCompletionChoiceType {
     MultichatCompletion,
 }

@@ -223,7 +223,7 @@ where
 
         // replace completion messages with assistant messages
         replace_completion_messages_with_assistant_messages(
-            completions,
+            &completions,
             &mut request.messages,
         )?;
 
@@ -440,7 +440,10 @@ pub async fn fetch_completion_futs_from_messages<CTX: Clone>(
     >,
     ctx: CTX,
     messages: &[super::request::Message],
-) -> Result<Vec<completions_archive::Completion>, crate::error::ResponseError> {
+) -> Result<
+    HashMap<String, completions_archive::Completion>,
+    crate::error::ResponseError,
+> {
     // first, create a future for each unique completion in choices and messages
     let mut completions_futs = Vec::new();
     let mut ids = HashSet::new();
@@ -490,32 +493,33 @@ pub async fn fetch_completion_futs_from_messages<CTX: Clone>(
         }
     }
     if completions_futs.is_empty() {
-        Ok(Vec::new())
+        Ok(HashMap::new())
     } else {
-        futures::future::try_join_all(completions_futs).await
+        let completions =
+            futures::future::try_join_all(completions_futs).await?;
+
+        // map from id to completion
+        let mut id_to_completion = HashMap::with_capacity(completions.len());
+        for completion in completions {
+            let id = match &completion {
+                completions_archive::Completion::Chat(c) => &c.id,
+                completions_archive::Completion::Score(c) => &c.id,
+                completions_archive::Completion::Multichat(c) => &c.id,
+            };
+            id_to_completion.insert(id.clone(), completion);
+        }
+
+        Ok(id_to_completion)
     }
 }
 
 pub fn replace_completion_messages_with_assistant_messages(
-    completions: Vec<completions_archive::Completion>,
+    completions: &HashMap<String, completions_archive::Completion>,
     messages: &mut Vec<super::request::Message>,
 ) -> Result<(), super::Error> {
     if completions.len() == 0 {
         return Ok(());
     }
-
-    // map from id to completion
-    let mut id_to_completion = HashMap::with_capacity(completions.len());
-    for completion in completions {
-        let id = match &completion {
-            completions_archive::Completion::Chat(c) => &c.id,
-            completions_archive::Completion::Score(c) => &c.id,
-            completions_archive::Completion::Multichat(c) => &c.id,
-        };
-        id_to_completion.insert(id.clone(), completion);
-    }
-
-    // replace completion messages with assistant message
     for message in messages {
         let (id, choice_index, name) = match message {
             super::request::Message::ChatCompletion(
@@ -542,20 +546,18 @@ pub fn replace_completion_messages_with_assistant_messages(
             _ => continue,
         };
         // return error if the choice_index is invalid
-        let completion_choice_message = match id_to_completion[id.as_str()] {
-            completions_archive::Completion::Chat(ref completion) => completion
+        let completion_choice_message = match &completions[id.as_str()] {
+            completions_archive::Completion::Chat(completion) => completion
                 .choices
                 .iter()
                 .find(|choice| choice.index == choice_index)
                 .map(|choice| choice.message.clone()),
-            completions_archive::Completion::Score(ref completion) => {
-                completion
-                    .choices
-                    .iter()
-                    .find(|choice| choice.index == choice_index)
-                    .map(|choice| choice.message.inner.clone())
-            }
-            completions_archive::Completion::Multichat(ref completion) => {
+            completions_archive::Completion::Score(completion) => completion
+                .choices
+                .iter()
+                .find(|choice| choice.index == choice_index)
+                .map(|choice| choice.message.inner.clone()),
+            completions_archive::Completion::Multichat(completion) => {
                 completion
                     .choices
                     .iter()
@@ -575,7 +577,6 @@ pub fn replace_completion_messages_with_assistant_messages(
             ),
         );
     }
-
     Ok(())
 }
 

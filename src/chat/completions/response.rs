@@ -405,6 +405,7 @@ pub mod unary {
     pub struct Message {
         pub content: Option<String>,
         pub refusal: Option<String>,
+        #[serde(default)]
         pub role: super::Role,
         #[serde(skip_serializing_if = "Option::is_none")]
         pub annotations: Option<Vec<Annotation>>,

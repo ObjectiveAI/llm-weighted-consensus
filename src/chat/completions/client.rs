@@ -584,6 +584,10 @@ pub fn convert_completion_choice_message_to_assistant_message(
     message: super::response::unary::Message,
     name: Option<String>,
 ) -> super::request::AssistantMessage {
+    println!(
+        "message: {}",
+        serde_json::to_string_pretty(&message).unwrap()
+    );
     // convert generated images to input image parts
     let image_parts = message
         .images
@@ -635,11 +639,16 @@ pub fn convert_completion_choice_message_to_assistant_message(
     // Extra tokens, idk, maybe make it configurable
     let reasoning = None;
 
-    super::request::AssistantMessage {
+    let assistant_message = super::request::AssistantMessage {
         content,
         name,
         refusal,
         tool_calls,
         reasoning,
-    }
+    };
+    println!(
+        "assistant_message: {}",
+        serde_json::to_string_pretty(&assistant_message).unwrap()
+    );
+    assistant_message
 }

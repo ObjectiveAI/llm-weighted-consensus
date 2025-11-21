@@ -134,7 +134,7 @@ where
             )
             .map_err(super::Error::CompletionsArchiveError)
         )?;
-        println!("Completions: {}", serde_json::to_string_pretty(&completions).unwrap());
+        // println!("Completions: {}", serde_json::to_string_pretty(&completions).unwrap());
 
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());

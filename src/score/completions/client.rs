@@ -146,6 +146,7 @@ where
             request_choices_len,
             request.choices.drain(..),
         )?;
+        println!("OriginalRequestChoices: {}", serde_json::to_string_pretty(&request.choices).unwrap());
         println!("InternalChoices: {}", serde_json::to_string_pretty(&internal_choices).unwrap());
         request.choices = internal_choices
             .iter()

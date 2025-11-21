@@ -134,19 +134,22 @@ where
             )
             .map_err(super::Error::CompletionsArchiveError)
         )?;
+        println!("Completions: {}", serde_json::to_string_pretty(&completions).unwrap());
 
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
+        println!("OriginalRequestMessages: {}", serde_json::to_string_pretty(&request.messages).unwrap());
         replace_completion_messages_with_assistant_messages(
             &completions,
             &mut request.messages,
         )?;
+        println!("RequestMessages: {}", serde_json::to_string_pretty(&request.messages).unwrap());
+        println!("OriginalRequestChoices: {}", serde_json::to_string_pretty(&request.choices).unwrap());
         let internal_choices = convert_choices_to_internal_choices(
             &completions,
             request_choices_len,
             request.choices.drain(..),
         )?;
-        println!("OriginalRequestChoices: {}", serde_json::to_string_pretty(&request.choices).unwrap());
         println!("InternalChoices: {}", serde_json::to_string_pretty(&internal_choices).unwrap());
         request.choices = internal_choices
             .iter()

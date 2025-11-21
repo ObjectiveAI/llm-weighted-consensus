@@ -69,7 +69,6 @@ impl Model {
 #[serde(untagged)]
 pub enum Choice {
     Text(String),
-    ChatCompletionChoiceMessage(chat::completions::response::unary::Message),
     ChatCompletion {
         r#type: ChatCompletionChoiceType,
         id: String,
@@ -88,6 +87,7 @@ pub enum Choice {
         #[serde(default)]
         choice_index: u64,
     },
+    ChatCompletionChoiceMessage(chat::completions::response::unary::Message),
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -427,11 +427,13 @@ where
             aggregate.usage = Some(usage);
             for choice in &mut aggregate.choices {
                 if choice.index < request_choices_len as u64 {
+                    let weight = choice_weight[choice.index as usize];
                     let confidence = if choice_weight_sum > rust_decimal::Decimal::ZERO {
-                        choice_weight[choice.index as usize] / choice_weight_sum
+                        weight / choice_weight_sum
                     } else {
                         rust_decimal::Decimal::ZERO
                     };
+                    choice.weight = Some(weight);
                     choice.confidence = Some(confidence);
                 } else if let Some(vote) = choice.delta.vote.take() {
                     for (i, v) in vote.into_iter().enumerate() {

@@ -1,6 +1,6 @@
 [package]
 name = "llm-weighted-consensus"
-version = "0.1.16"
+version = "0.1.17"
 edition = "2024"
 authors = ["Objective Artificial Intelligence, Inc. <admin@objective-ai.io>"]
 description = "The most powerful AI scoring system on earth."
@@ -11,8 +11,10 @@ keywords = ["llm", "ai", "objectiveai", "weighted", "consensus"]
 publish = true
 
 [dependencies]
-axum = { version = "0.8.4" }
-tokio = { version = "1.45.0", features = ["rt-multi-thread", "macros", "sync"] }
+tower = { version ="0.5.2" }
+reqwest-eventsource = { version = "0.6.0" }
+eventsource-stream = { version = "0.2.3" }
+async-stream = { version = "0.3.6" }
 tokio-stream = { version = "0.1.17" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140", features = ["preserve_order"] }
@@ -24,19 +26,19 @@ thiserror = {  version = "2.0.12" }
 serde_path_to_error = { version = "0.1.17" }
 envconfig = { version = "0.11.0" }
 rust_decimal = { version = "1.37.1", features = ["serde-float", "macros", "maths"] }
-backoff = { version = "0.4.0", features = ["tokio"] }
-rand = { version = "0.9.1" }
 dashmap = { version = "6.1.0" }
 async-trait = { version = "0.1.88" }
-uuid = { version = "1.16.0", features = ["v4"] }
 regex = { version = "1.11.1" }
-tower = { version ="0.5.2" }
-async-stream = { version = "0.3.6" }
-reqwest-eventsource = { version = "0.6.0" }
-eventsource-stream = { version = "0.2.3" }
-twox-hash = { version = "2.1.1" }
-time = { version = "0.3.41" }
-base64 = { version = "0.22.1" }
 base62 = { version = "2.2.1" }
+base64 = { version = "0.22.1" }
+twox-hash = { version = "2.1.1", default-features = false, features = ["xxhash3_128", "alloc"] }
+time = { version = "0.3.41" }
 subtle = { version = "2.6.1" }
 dotenv = { version = "0.15.0" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+rand = { version = "0.9.1" }
+uuid = { version = "1.16.0", features = ["v4"] }
+axum = { version = "0.8.4" }
+tokio = { version = "1.45.0", features = ["rt-multi-thread", "macros", "sync"] }
+backoff = { version = "0.4.0", features = ["tokio"] }

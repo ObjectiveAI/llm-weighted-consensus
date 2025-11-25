@@ -39,6 +39,7 @@ where
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl axum::response::IntoResponse for ResponseError {
     fn into_response(self) -> axum::response::Response {
         let status = axum::http::StatusCode::from_u16(self.code)

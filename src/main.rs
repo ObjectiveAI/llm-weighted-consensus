@@ -1,13 +1,4 @@
-use axum::{
-    Json,
-    response::{IntoResponse, Sse, sse::Event},
-};
 use envconfig::Envconfig;
-use llm_weighted_consensus::{
-    chat::completions::Client, error::StatusError, *,
-};
-use std::{convert::Infallible, sync::Arc};
-use tokio_stream::StreamExt;
 
 #[derive(Envconfig)]
 struct Config {
@@ -45,8 +36,19 @@ struct Config {
     port: u16,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 #[tokio::main]
 async fn main() {
+    use axum::{
+        Json,
+        response::{IntoResponse, Sse, sse::Event},
+    };
+    use llm_weighted_consensus::{
+        chat::completions::Client, error::StatusError, *,
+    };
+    use std::{convert::Infallible, sync::Arc};
+    use tokio_stream::StreamExt;
+
     // load .env file if present
     let _ = dotenv::dotenv();
 
@@ -236,3 +238,6 @@ async fn main() {
 
     axum::serve(listener, app).await.unwrap();
 }
+
+#[cfg(target_arch = "wasm32")]
+fn main() {}

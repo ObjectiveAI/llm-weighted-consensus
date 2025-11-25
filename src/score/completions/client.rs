@@ -341,6 +341,7 @@ where
         // stream
         let indexer =
             Arc::new(ChoiceIndexer::new(request_choices_len as u64));
+        println!("J");
         Ok(async_stream::stream! {
             let mut vote_stream = futures::stream::select_all(model.llms
                 .iter()
@@ -357,7 +358,7 @@ where
                 })
             );
             while let Some(mut chunk) = vote_stream.next().await {
-                println!("J");
+                println!("SUCCESS");
                 // yield provided choices first
                 if let Some(initial_chunk) = initial_chunk.take() {
                     yield Ok(initial_chunk);
@@ -480,6 +481,7 @@ where
     + Send
     + Unpin
     + 'static {
+        println!("K");
         let super::request::ChatCompletionCreateParams {
             messages,
             seed,
@@ -496,10 +498,13 @@ where
         if let Some(suffix_messages) = llm.base.suffix_messages {
             messages.extend(suffix_messages);
         }
+        println!("L");
 
         // create prefixes and get choices string
         let (pfx_tree, pfx_indices, choices_string) = {
+            println!("M");
             let mut rng = rand::rng();
+            println!("N");
             // create the prefixes
             let pfx_tree = SelectPfxTree::new(
                 &mut rng,
@@ -509,13 +514,16 @@ where
                     None => 20,
                 },
             );
+            println!("O");
             // map prefix to choice index
             let pfx_indices = pfx_tree.pfx_indices(&mut rng, request_choices_len);
+            println!("P");
             // serialize choices
             let choices_string = SelectPfxTree::json_serialize_select_choices(
                 &request.choices,
                 &pfx_indices,
             );
+            println!("Q");
             (pfx_tree, pfx_indices, choices_string)
         };
 
@@ -524,6 +532,7 @@ where
             .into_iter()
             .map(|(pfx, _)| pfx)
             .collect::<Vec<_>>();
+        println!("R");
 
         let (
             // regex capture pattern matching response keys as-is
@@ -531,6 +540,7 @@ where
             // regex capture pattern matching response keys stripped of first and last tick
             choices_key_pattern_stripped,
         ) = pfx_tree.regex_patterns(&choices_keys);
+        println!("S");
 
         // add selection to prompt
         let content = match llm.base.output_mode {

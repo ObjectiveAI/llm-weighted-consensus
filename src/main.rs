@@ -1,7 +1,7 @@
 use envconfig::Envconfig;
 
 #[derive(Envconfig)]
-struct Config {
+pub struct Config {
     #[envconfig(from = "BACKOFF_CURRENT_INTERVAL_MILLIS", default = "100")]
     backoff_current_interval_millis: u64,
     #[envconfig(from = "BACKOFF_INITIAL_INTERVAL_MILLIS", default = "100")]

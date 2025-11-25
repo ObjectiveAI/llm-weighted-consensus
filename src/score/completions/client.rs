@@ -104,13 +104,14 @@ where
         + 'static,
         super::Error,
     > {
+        println!("A");
         // timestamp and identify the completion
         let created = time::SystemTime::now()
             .duration_since(time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
         let response_id = response_id(created);
-
+        println!("B");
         // validate choice count
         let request_choices_len = request.choices.len();
         if request_choices_len < 2 {
@@ -118,7 +119,7 @@ where
                 request_choices_len,
             ));
         }
-
+        println!("C");
         // fetch or validate the score model and fetch completions
         let (model, completions) = tokio::try_join!(
             fetch_or_validate_score_model(
@@ -134,7 +135,7 @@ where
             )
             .map_err(super::Error::CompletionsArchiveError)
         )?;
-
+        println!("D");
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
         replace_completion_messages_with_assistant_messages(
@@ -146,6 +147,7 @@ where
             request_choices_len,
             request.choices.drain(..),
         )?;
+        println!("E");
         request.choices = internal_choices
             .iter()
             .map(|choice| match choice {
@@ -168,7 +170,7 @@ where
             })
             .map(super::request::Choice::Text)
             .collect::<Vec<_>>();
-
+        println!("F");
         // wrap finalized request in Arc
         let request = Arc::new(request);
 
@@ -178,7 +180,7 @@ where
             .fetch(ctx.clone(), request.clone(), model.clone())
             .await
             .map_err(|e| super::Error::FetchModelWeights(e))?;
-
+        println!("G");
         // create the first chunk, containing the provided choices
         let mut aggregate = super::response::streaming::ChatCompletionChunk {
             id: response_id.clone(),
@@ -325,7 +327,7 @@ where
             weight_data: None,
         };
         let mut initial_chunk = Some(aggregate.clone());
-
+        println!("H");
         // track usage
         let mut usage: chat::completions::response::Usage = match &weight_data {
             super::weight::Data::TrainingTable(ttd) => {
@@ -335,7 +337,7 @@ where
                 chat::completions::response::Usage::default()
             }
         };
-
+        println!("I");
         // stream
         let indexer =
             Arc::new(ChoiceIndexer::new(request_choices_len as u64));
@@ -355,6 +357,7 @@ where
                 })
             );
             while let Some(mut chunk) = vote_stream.next().await {
+                println!("J");
                 // yield provided choices first
                 if let Some(initial_chunk) = initial_chunk.take() {
                     yield Ok(initial_chunk);

@@ -134,23 +134,18 @@ where
             )
             .map_err(super::Error::CompletionsArchiveError)
         )?;
-        // println!("Completions: {}", serde_json::to_string_pretty(&completions).unwrap());
 
         // replace request model, choices, and messages
         request.model = super::request::Model::Id(model.id.clone());
-        println!("OriginalRequestMessages: {}", serde_json::to_string_pretty(&request.messages).unwrap());
         replace_completion_messages_with_assistant_messages(
             &completions,
             &mut request.messages,
         )?;
-        println!("RequestMessages: {}", serde_json::to_string_pretty(&request.messages).unwrap());
-        println!("OriginalRequestChoices: {}", serde_json::to_string_pretty(&request.choices).unwrap());
         let internal_choices = convert_choices_to_internal_choices(
             &completions,
             request_choices_len,
             request.choices.drain(..),
         )?;
-        println!("InternalChoices: {}", serde_json::to_string_pretty(&internal_choices).unwrap());
         request.choices = internal_choices
             .iter()
             .map(|choice| match choice {
@@ -173,7 +168,6 @@ where
             })
             .map(super::request::Choice::Text)
             .collect::<Vec<_>>();
-        println!("A: {}", serde_json::to_string_pretty(&request.choices).unwrap());
 
         // wrap finalized request in Arc
         let request = Arc::new(request);
@@ -191,7 +185,6 @@ where
             choices: {
                 let mut choices = Vec::with_capacity(internal_choices.len() + model.llms.len());
                 for (i, request_choice) in internal_choices.into_iter().enumerate() {
-                    println!("B: {}", serde_json::to_string_pretty(&request_choice).unwrap());
                     choices.push(
                         match request_choice {
                             super::request::InternalChoice::Text(text) => {
@@ -1211,7 +1204,7 @@ fn convert_chat_completion_choice_message_to_delta(
         ..
     }: chat::completions::response::unary::Message,
 ) -> super::response::streaming::Delta {
-    let delta = super::response::streaming::Delta {
+    super::response::streaming::Delta {
         inner: chat::completions::response::streaming::Delta {
             content,
             refusal,
@@ -1223,9 +1216,7 @@ fn convert_chat_completion_choice_message_to_delta(
             images,
         },
         vote: None,
-    };
-    println!("C: {}", serde_json::to_string_pretty(&delta).unwrap());
-    delta
+    }
 }
 
 fn convert_completion_message_to_text(

@@ -502,8 +502,8 @@ where
                 &mut rng,
                 request_choices_len,
                 match llm.base.top_logprobs {
+                    Some(0) | Some(1) | None => 20,
                     Some(top_logprobs) => top_logprobs as usize,
-                    None => 20,
                 },
             );
             // map prefix to choice index

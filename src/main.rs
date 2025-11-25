@@ -3,37 +3,37 @@ use envconfig::Envconfig;
 #[derive(Envconfig)]
 pub struct Config {
     #[envconfig(from = "BACKOFF_CURRENT_INTERVAL_MILLIS", default = "100")]
-    backoff_current_interval_millis: u64,
+    pub backoff_current_interval_millis: u64,
     #[envconfig(from = "BACKOFF_INITIAL_INTERVAL_MILLIS", default = "100")]
-    backoff_initial_interval_millis: u64,
+    pub backoff_initial_interval_millis: u64,
     #[envconfig(from = "BACKOFF_RANDOMIZATION_FACTOR", default = "0.5")]
-    backoff_randomization_factor: f64,
+    pub backoff_randomization_factor: f64,
     #[envconfig(from = "BACKOFF_MULTIPLIER", default = "1.5")]
-    backoff_multiplier: f64,
+    pub backoff_multiplier: f64,
     #[envconfig(from = "BACKOFF_MAX_INTERVAL_MILLIS", default = "1000")]
-    backoff_max_interval_millis: u64,
+    pub backoff_max_interval_millis: u64,
     #[envconfig(from = "BACKOFF_MAX_ELAPSED_TIME_MILLIS", default = "40000")]
-    backoff_max_elapsed_time_millis: u64,
+    pub backoff_max_elapsed_time_millis: u64,
     #[envconfig(from = "FIRST_CHUNK_TIMEOUT_MILLIS", default = "10000")]
-    first_chunk_timeout_millis: u64,
+    pub first_chunk_timeout_millis: u64,
     #[envconfig(from = "OTHER_CHUNK_TIMEOUT_MILLIS", default = "60000")]
-    other_chunk_timeout_millis: u64,
+    pub other_chunk_timeout_millis: u64,
     #[envconfig(from = "OPENAI_API_BASE")]
-    openai_api_base: Option<String>,
+    pub openai_api_base: Option<String>,
     #[envconfig(from = "OPENAI_API_KEY")]
-    openai_api_key: Option<String>,
+    pub openai_api_key: Option<String>,
     #[envconfig(from = "OPENAI_APIS")]
-    openai_apis: Option<String>,
+    pub openai_apis: Option<String>,
     #[envconfig(from = "OPENAI_USER_AGENT")]
-    openai_user_agent: Option<String>,
+    pub openai_user_agent: Option<String>,
     #[envconfig(from = "OPENAI_X_TITLE")]
-    openai_x_title: Option<String>,
+    pub openai_x_title: Option<String>,
     #[envconfig(from = "OPENAI_REFERER")]
-    openai_referer: Option<String>,
+    pub openai_referer: Option<String>,
     #[envconfig(from = "ADDRESS", default = "0.0.0.0")]
-    address: String,
+    pub address: String,
     #[envconfig(from = "PORT", default = "5000")]
-    port: u16,
+    pub port: u16,
 }
 
 #[cfg(not(target_arch = "wasm32"))]

@@ -1,6 +1,6 @@
 [package]
 name = "llm-weighted-consensus"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2024"
 authors = ["Objective Artificial Intelligence, Inc. <admin@objective-ai.io>"]
 description = "The most powerful AI scoring system on earth."

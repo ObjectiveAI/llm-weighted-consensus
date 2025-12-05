@@ -4,7 +4,7 @@ pub use fetcher::*;
 
 use crate::chat;
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use twox_hash::XxHash3_128;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -113,6 +113,7 @@ impl ModelBase {
             None
         };
         let mut multichat_hasher = XxHash3_128::with_seed(0);
+        let mut multichat_seen = HashMap::with_capacity(multichat_ids.len());
 
         // iterate over LLMs to:
         // - set index
@@ -150,11 +151,16 @@ impl ModelBase {
             }
 
             // hash multichat ID and set multichat index
+            multichat_seen
+                .entry(multichat_id.clone())
+                .and_modify(|e| *e += 1)
+                .or_insert(1);
             multichat_hasher.write(multichat_id.as_bytes());
             *multichat_index = multichat_ids
                 .iter()
                 .position(|n| n == multichat_id)
                 .unwrap();
+            *multichat_index += multichat_seen[multichat_id.as_str()] - 1;
         }
 
         // iterate over multichat IDs to hash them and set multichat index for LLMs
